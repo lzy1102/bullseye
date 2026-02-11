@@ -1,0 +1,212 @@
+# Bullseye Quantitative Trading Framework - Docker Compose
+# Version 3.8 for Docker Compose compatibility
+
+version: "3.8"
+
+services:
+  # Main Bullseye trading service
+  bullseye:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bullseye:latest
+    container_name: bullseye_trading
+    restart: unless-stopped
+
+    # Environment variables
+    environment:
+      - PYTHONUNBUFFERED=1
+      - BULLSEYE_CONFIG=/app/config.yaml
+      - BULLSEYE_USER_DATA=/app/user_data
+      - TZ=Asia/Shanghai
+      # Database configuration (optional PostgreSQL)
+      - DB_URL=postgresql://bullseye:bullseye_password@postgres:5432/bullseye
+
+    # Mount volumes for persistence and configuration
+    volumes:
+      # Configuration file
+      - ./config.yaml:/app/config.yaml:ro
+
+      # User data directory (strategies, data, logs, etc.)
+      - ./user_data:/app/user_data
+
+      # Optional: Mount custom strategies
+      # - ./user_data/strategies:/app/user_data/strategies:ro
+
+      # Optional: Mount data directory for historical data
+      # - ./user_data/data:/app/user_data/data
+
+      # Optional: Mount logs
+      # - ./user_data/logs:/app/user_data/logs
+
+      # Optional: Mount backtest results
+      # - ./user_data/backtest_results:/app/user_data/backtest_results
+
+    # Port mappings
+    ports:
+      - "8080:8080"  # API server
+      - "8765:8765"  # WebSocket
+
+    # Command override for different modes
+    # Default: dry-run trading
+    command: ["trade", "--dry"]
+
+    # Network
+    networks:
+      - bullseye_network
+
+    # Dependency on database (if using PostgreSQL)
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # profiles:
+    #   - with_db  # Uncomment to enable PostgreSQL dependency
+
+  # PostgreSQL Database (optional)
+  postgres:
+    image: postgres:16-alpine
+    container_name: bullseye_postgres
+    restart: unless-stopped
+
+    environment:
+      - POSTGRES_USER=bullseye
+      - POSTGRES_PASSWORD=bullseye_password
+      - POSTGRES_DB=bullseye
+      - TZ=Asia/Shanghai
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+    ports:
+      - "5432:5432"
+
+    networks:
+      - bullseye_network
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bullseye"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    profiles:
+      - with_db  # Only start when profile is specified
+
+  # Redis Cache (optional, for caching market data)
+  redis:
+    image: redis:7-alpine
+    container_name: bullseye_redis
+    restart: unless-stopped
+
+    command: redis-server --appendonly yes --requirepass redis_password
+
+    volumes:
+      - redis_data:/data
+
+    ports:
+      - "6379:6379"
+
+    networks:
+      - bullseye_network
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    profiles:
+      - with_cache  # Only start when profile is specified
+
+  # Grafana Dashboard (optional, for monitoring)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: bullseye_grafana
+    restart: unless-stopped
+
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./docker/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+
+    ports:
+      - "3000:3000"
+
+    networks:
+      - bullseye_network
+
+    depends_on:
+      - postgres
+
+    profiles:
+      - with_monitoring  # Only start when profile is specified
+
+  # Prometheus (optional, for metrics collection)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: bullseye_prometheus
+    restart: unless-stopped
+
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+    ports:
+      - "9090:9090"
+
+    networks:
+      - bullseye_network
+
+    profiles:
+      - with_monitoring  # Only start when profile is specified
+
+  # Jupyter Notebook (optional, for strategy development)
+  jupyter:
+    image: jupyter/scipy-notebook:latest
+    container_name: bullseye_jupyter
+    restart: unless-stopped
+
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      - GRANT_SUDO=yes
+
+    volumes:
+      - ./user_data:/home/jovyan/work
+      - ./user_data/data:/home/jovyan/data
+
+    ports:
+      - "8888:8888"
+
+    networks:
+      - bullseye_network
+
+    command: start-notebook.sh --NotebookApp.token='' --NotebookApp.password=''
+
+    profiles:
+      - with_dev  # Only start when profile is specified
+
+networks:
+  bullseye_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  grafana_data:
+    driver: local
+  prometheus_data:
+    driver: local

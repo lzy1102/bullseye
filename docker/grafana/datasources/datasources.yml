@@ -1,0 +1,23 @@
+# Grafana Datasources Configuration
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+
+  - name: Bullseye-PostgreSQL
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    database: bullseye
+    user: bullseye
+    jsonData:
+      sslmode: disable
+    secureJsonData:
+      password: bullseye_password
+    editable: true
