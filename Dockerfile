@@ -20,17 +20,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install TA-Lib (technical analysis library)
-WORKDIR /tmp
-RUN wget -q https://github.com/TA-Lib/ta-lib/archive/refs/tags/ta-lib-0.4.0.tar.gz \
-    && tar -xzf ta-lib-0.4.0.tar.gz \
-    && cd ta-lib \
-    && ./configure --prefix=/usr \
-    && make \
-    && make install \
-    && cd .. \
-    && rm -rf ta-lib ta-lib-0.4.0.tar.gz
-
 # Final stage
 FROM python:3.12-slim
 
@@ -49,7 +38,6 @@ ENV PYTHONUNBUFFERED=1 \
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ta-lib \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -58,14 +46,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN groupadd -r bullseye && useradd -r -g bullseye -G audio,video bullseye \
     && mkdir -p /app /app/user_data /app/user_data/strategies \
     /app/user_data/data /app/user_data/logs /app/user_data/backtest_results
-
-# Copy TA-Lib from builder
-COPY --from=builder /usr/lib/libta*.* /usr/lib/
-COPY --from=builder /usr/include/ta-lib/ /usr/include/ta-lib/
-COPY --from=builder /usr/local/lib/libta*.* /usr/local/lib/
-
-# Update library cache
-RUN ldconfig
 
 # Set working directory
 WORKDIR /app
@@ -97,13 +77,13 @@ RUN chown -R bullseye:bullseye /app
 USER bullseye
 
 # Expose ports
-# 8080: API server
+# 9876: API server
 # 8765: WebSocket
-EXPOSE 8080 8765
+EXPOSE 9876 8765
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/api/v1/ping || exit 1
+    CMD curl -f http://localhost:9876/api/v1/ping || exit 1
 
 # Set default entrypoint
 ENTRYPOINT ["/entrypoint.sh"]

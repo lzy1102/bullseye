@@ -254,6 +254,153 @@ class IStrategy:
         """Check if sell order has timed out"""
         return False
 
+    # ==================== Additional Freqtrade Methods ====================
+    
+    def custom_roi(
+        self,
+        pair: str,
+        current_time: datetime,
+        current_rate: float,
+        current_profit: float,
+        **kwargs
+    ) -> Optional[float]:
+        """
+        Custom ROI logic, return target profit percentage or None
+        
+        Override this to implement dynamic ROI based on market conditions.
+        """
+        return None
+    
+    def custom_exit_price(
+        self,
+        pair: str,
+        trade: 'Trade',
+        current_time: datetime,
+        proposed_rate: float,
+        current_profit: float,
+        exit_tag: Optional[str],
+        **kwargs
+    ) -> float:
+        """
+        Custom exit price
+        
+        Override to modify the exit price before placing the exit order.
+        """
+        return proposed_rate
+    
+    def adjust_entry_price(
+        self,
+        pair: str,
+        current_time: datetime,
+        proposed_rate: float,
+        entry_tag: Optional[str],
+        side: str,
+        **kwargs
+    ) -> float:
+        """
+        Adjust entry order price
+        
+        Override to modify the entry price before placing the entry order.
+        """
+        return proposed_rate
+    
+    def adjust_exit_price(
+        self,
+        pair: str,
+        trade: 'Trade',
+        current_time: datetime,
+        proposed_rate: float,
+        current_profit: float,
+        exit_tag: Optional[str],
+        **kwargs
+    ) -> float:
+        """
+        Adjust exit order price
+        
+        Override to modify the exit price before placing the exit order.
+        """
+        return proposed_rate
+    
+    def adjust_order_price(
+        self,
+        pair: str,
+        current_time: datetime,
+        proposed_rate: float,
+        order_type: str,
+        side: str,
+        **kwargs
+    ) -> float:
+        """
+        Adjust order price
+        
+        Override to modify order price before placing any order.
+        """
+        return proposed_rate
+    
+    def order_filled(
+        self,
+        pair: str,
+        trade: 'Trade',
+        order: 'Order',
+        current_time: datetime,
+        **kwargs
+    ) -> None:
+        """
+        Called when an order is completely filled
+        
+        Override to execute custom logic when an order is filled.
+        """
+        pass
+
+    # ==================== Pair Locking Methods ====================
+    
+    def lock_pair(
+        self,
+        pair: str,
+        until: datetime,
+        reason: str,
+        **kwargs
+    ) -> None:
+        """
+        Lock a trading pair, preventing new positions until specified time
+        
+        Args:
+            pair: Trading pair to lock
+            until: Time until pair is locked
+            reason: Reason for locking
+        """
+        pass
+    
+    def unlock_pair(
+        self,
+        pair: str,
+        **kwargs
+    ) -> None:
+        """
+        Unlock a trading pair
+        
+        Args:
+            pair: Trading pair to unlock
+        """
+        pass
+    
+    def is_pair_locked(
+        self,
+        pair: str,
+        current_time: datetime,
+        **kwargs
+    ) -> bool:
+        """
+        Check if a trading pair is currently locked
+        
+        Args:
+            pair: Trading pair to check
+            current_time: Current time
+            
+        Returns:
+            True if pair is locked, False otherwise
+        """
+        return False
 
 # ==================== @informative Decorator ====================
 

@@ -13,6 +13,7 @@ This module contains all data objects used throughout the trading system:
 
 from .tick import TickData
 from .kline import KlineData
+from .orderbook import OrderBookData
 from .order import OrderData, OrderType, Direction, Offset, Status
 from .trade import TradeData
 from .position import PositionData
@@ -22,6 +23,7 @@ from .contract import ContractData, ProductClass, OptionType
 __all__ = [
     "TickData",
     "KlineData",
+    "OrderBookData",
     "OrderData",
     "OrderType",
     "Direction",

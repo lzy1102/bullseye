@@ -18,6 +18,35 @@ dry_run_wallet: 1000
 # - future: Futures markets (Chinese futures via CTP)
 market_type: auto
 
+# ==================== Settlement Configuration (T+0/T+1) ====================
+# Settlement rules control when a position can be sold after opening.
+# T+0: Can sell immediately (crypto, US stocks, HK stocks, futures)
+# T+1: Can sell next trading day (Chinese A-shares)
+# T+2: Can sell in 2 trading days (some markets)
+settlement:
+  # Mode: "auto" (auto-detect) or "manual"
+  # Auto-detection uses pair format to determine settlement type:
+  # - A-shares (000001.SZ, 600000.SH): T+1
+  # - Crypto (BTC/USDT): T+0
+  # - US Stocks (AAPL, GOOGL): T+0
+  # - HK Stocks (00700.HK): T+0
+  # - Futures (AU2506@SHFE): T+0
+  mode: auto
+
+  # Per-pair overrides - use this to override auto-detection
+  # Format: "PAIR": "t0" | "t1" | "t2"
+  overrides:
+    # Examples:
+    # "CUSTOM.PAIR": "t1"      # Force custom pair to T+1
+    # "SPECIAL/USDT": "t0"     # Force crypto to T+0
+    # For Chinese A-shares, auto-detection should work correctly,
+    # but you can override if needed:
+    # "000001.SZ": "t1"        # Explicit A-share T+1
+
+  # Default settlement type for unknown pairs (when auto-detection fails)
+  # Set to "t1" if you primarily trade A-shares with custom pair formats
+  default: t0
+
 # ==================== Exchange Configuration ====================
 exchange:
   name: binance

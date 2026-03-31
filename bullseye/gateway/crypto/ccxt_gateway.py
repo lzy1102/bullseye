@@ -17,7 +17,7 @@ from ..base import BaseGateway, GatewayType
 from ...trader.eventengine import EventType
 from ...trader.object import (
     ContractData, TickData, OrderData, TradeData,
-    PositionData, AccountData, KlineData,
+    PositionData, AccountData, KlineData, OrderBookData,
     OrderType, Direction, Status, ProductClass
 )
 
@@ -327,6 +327,35 @@ class CcxtGateway(BaseGateway):
 
         except Exception as e:
             logger.error(f"Failed to get tick: {e}")
+            return None
+
+    def get_order_book(self, symbol: str, limit: int = 20) -> Optional[OrderBookData]:
+        """
+        Get order book snapshot via CCXT.
+
+        Args:
+            symbol: Trading pair (e.g., BTC/USDT)
+            limit: Number of price levels per side
+
+        Returns:
+            OrderBookData or None on failure
+        """
+        try:
+            ob = self._exchange.fetch_order_book(symbol, limit)
+
+            orderbook = OrderBookData(
+                gateway_name=self.gateway_name,
+                symbol=symbol,
+                exchange=self.gateway_name,
+                datetime=datetime.now(timezone.utc),
+                bids=[[float(bid[0]), float(bid[1])] for bid in ob.get("bids", [])],
+                asks=[[float(ask[0]), float(ask[1])] for ask in ob.get("asks", [])],
+            )
+
+            return orderbook
+
+        except Exception as e:
+            logger.error(f"Failed to get order book for {symbol}: {e}")
             return None
 
     # ==================== Helper Methods ====================

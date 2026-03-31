@@ -9,6 +9,7 @@ Key Components:
 - @informative: Decorator for multi-timeframe analysis
 - merge_informative_pair(): Helper for merging timeframes
 - Hyperoptable Parameters: IntParameter, DecimalParameter, BooleanParameter, CategoricalParameter
+- Template Generator: create_strategy_template, list_available_templates
 """
 
 from .interface import (
@@ -26,6 +27,10 @@ from .interface import (
     RealParameter,
     CategoricalParameter,
     RunMode,
+)
+from .template import (
+    create_strategy_template,
+    list_available_templates,
 )
 
 __all__ = [
@@ -47,4 +52,7 @@ __all__ = [
     "CategoricalParameter",
     # Enums
     "RunMode",
+    # Template generator
+    "create_strategy_template",
+    "list_available_templates",
 ]

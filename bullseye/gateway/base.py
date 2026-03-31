@@ -10,7 +10,7 @@ import logging
 from ..trader.eventengine import EventEngine, EventType
 from ..trader.object import (
     ContractData, TickData, OrderData, TradeData,
-    PositionData, AccountData, KlineData,
+    PositionData, AccountData, KlineData, OrderBookData,
     OrderType, Direction, Offset
 )
 
@@ -197,6 +197,19 @@ class BaseGateway(ABC):
         """
         return None
 
+    def get_order_book(self, symbol: str, limit: int = 20) -> Optional[OrderBookData]:
+        """
+        Get order book snapshot
+
+        Args:
+            symbol: Trading symbol
+            limit: Number of price levels per side
+
+        Returns:
+            OrderBookData object or None
+        """
+        return None
+
     # ==================== Event Publishing ====================
 
     def on_tick(self, tick: TickData):
@@ -228,6 +241,11 @@ class BaseGateway(ABC):
         """Publish contract event"""
         contract.gateway_name = self.gateway_name
         self.event_engine.publish(EventType.EVENT_CONTRACT, contract, self.gateway_name)
+
+    def on_orderbook(self, orderbook: OrderBookData):
+        """Publish order book event"""
+        orderbook.gateway_name = self.gateway_name
+        self.event_engine.publish(EventType.EVENT_ORDERBOOK, orderbook, self.gateway_name)
 
     def on_log(self, log: str):
         """Publish log event"""

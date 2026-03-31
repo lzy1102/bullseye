@@ -30,6 +30,15 @@ colorlog>=6.8.0
 fastapi>=0.110.0
 uvicorn>=0.28.0
 websockets>=12.0
+python-jose>=3.3.0
+python-telegram-bot>=20.0
+
+# Plotting
+plotly>=5.0.0
+kaleido>=0.2.0
+
+# Data formats
+pyarrow>=12.0.0
 
 # CLI
 click>=8.1.0

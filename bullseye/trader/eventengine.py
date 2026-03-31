@@ -25,6 +25,7 @@ class EventType(Enum):
     # Market data events
     EVENT_TICK = "eTick"              # Tick data
     EVENT_KLINE = "eKline"            # Kline data
+    EVENT_ORDERBOOK = "eOrderBook"    # Order book snapshot
 
     # Trading events
     EVENT_ORDER = "eOrder"            # Order status update
@@ -69,17 +70,26 @@ class EventEngine:
 
     Handles event distribution using a queue-based system.
     Supports event subscription and publishing.
+
+    Thread Safety:
+    - Uses bounded queue to prevent memory exhaustion
+    - All handler access is protected by locks
+    - Graceful shutdown with timeout handling
     """
+
+    # Maximum queue size to prevent memory exhaustion
+    MAX_QUEUE_SIZE = 10000
 
     def __init__(self):
         """Initialize event engine"""
         self._active: bool = False
         self._thread: Optional[Thread] = None
-        self._queue: Queue = Queue()
+        self._queue: Queue = Queue(maxsize=self.MAX_QUEUE_SIZE)
         self._handlers: Dict[EventType, List[Callable]] = {}
         self._general_handlers: List[Callable] = []
         self._timer_handlers: List[Callable] = []
         self._lock = Lock()
+        self._handler_lock = Lock()  # Separate lock for handler access
         self._timer_interval: float = 1.0
 
     def start(self, timer_interval: float = 1.0):
@@ -100,18 +110,44 @@ class EventEngine:
 
         logger.info("Event engine started")
 
-    def stop(self):
-        """Stop event engine"""
+    def stop(self, timeout: float = 10.0):
+        """
+        Stop event engine
+
+        Args:
+            timeout: Maximum time to wait for thread termination (seconds)
+        """
         if not self._active:
             return
 
         self._active = False
 
-        if self._thread:
+        if self._thread and self._thread.is_alive():
             # Put a None to wake up the thread
-            self._queue.put(None)
-            self._thread.join(timeout=5)
-            self._thread = None
+            try:
+                self._queue.put_nowait(None)
+            except:
+                pass  # Queue might be full, thread will timeout anyway
+
+            # Wait for thread to terminate
+            self._thread.join(timeout=timeout)
+
+            if self._thread.is_alive():
+                logger.warning(
+                    f"Event engine thread did not terminate within {timeout}s, "
+                    "proceeding anyway (daemon thread will be killed on exit)"
+                )
+            else:
+                logger.debug("Event engine thread terminated gracefully")
+
+        self._thread = None
+
+        # Clear the queue to free memory
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except:
+                break
 
         logger.info("Event engine stopped")
 
@@ -144,20 +180,24 @@ class EventEngine:
     def _process_event(self, event: Event):
         """Process a single event"""
         try:
-            # Call general handlers first
-            for handler in self._general_handlers:
+            # Get snapshot of handlers under lock to avoid race conditions
+            with self._handler_lock:
+                general_handlers = list(self._general_handlers)
+                type_handlers = list(self._handlers.get(event.type, []))
+
+            # Call general handlers first (outside lock)
+            for handler in general_handlers:
                 try:
                     handler(event)
                 except Exception as e:
                     logger.error(f"General handler error: {e}", exc_info=True)
 
-            # Call specific event type handlers
-            if event.type in self._handlers:
-                for handler in self._handlers[event.type]:
-                    try:
-                        handler(event)
-                    except Exception as e:
-                        logger.error(f"Handler error for {event.type}: {e}", exc_info=True)
+            # Call specific event type handlers (outside lock)
+            for handler in type_handlers:
+                try:
+                    handler(event)
+                except Exception as e:
+                    logger.error(f"Handler error for {event.type}: {e}", exc_info=True)
 
         except Exception as e:
             logger.error(f"Event processing error: {e}", exc_info=True)
@@ -168,8 +208,12 @@ class EventEngine:
             timer_event = Event(EventType.EVENT_TIMER)
             self._process_event(timer_event)
 
-            # Call timer handlers
-            for handler in self._timer_handlers:
+            # Get snapshot of timer handlers under lock
+            with self._handler_lock:
+                timer_handlers = list(self._timer_handlers)
+
+            # Call timer handlers (outside lock)
+            for handler in timer_handlers:
                 try:
                     handler()
                 except Exception as e:
