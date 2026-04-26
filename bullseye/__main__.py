@@ -12,7 +12,10 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from . import __version__
+try:
+    from . import __version__
+except ImportError:
+    __version__ = "0.1.0"
 from .commands import (
     # Config commands
     create_userdir, new_config, show_config,
@@ -165,25 +168,93 @@ def trade(ctx, dry: bool, live: bool, strategy: Optional[str], config: Optional[
 @click.option('--timeframe', '-tf', type=str, default='5m', help='Timeframe')
 @click.option('--timerange', type=str, help='Time range (e.g., 20240101-20241231)')
 @click.option('--config', '-c', type=str, help='Configuration file')
+@click.option('--stake-amount', type=float, help='Stake amount per trade')
+@click.option('--initial-balance', type=float, default=1000, help='Initial balance')
+@click.option('--max-open-trades', type=int, help='Max concurrent open trades')
+@click.option('--fee', type=float, default=0.001, help='Fee rate (e.g., 0.001 for 0.1%%)')
+@click.option('--export', type=str, help='Export results to JSON file')
 @click.pass_context
-def backtesting(ctx, strategy: str, timeframe: str, timerange: Optional[str], config: Optional[str]):
+def backtesting(ctx, strategy: str, timeframe: str, timerange: Optional[str],
+                config: Optional[str], stake_amount: Optional[float],
+                initial_balance: float, max_open_trades: Optional[int],
+                fee: float, export: Optional[str]):
     """
     Run backtesting
 
     Examples:
         bullseye backtesting --strategy MyStrategy
         bullseye backtesting --strategy MyStrategy --timerange 20240101-20241231
+        bullseye backtesting --strategy MyStrategy --initial-balance 10000 --fee 0.001
     """
-    console.print(f"[green]Running backtest...[/green]")
-    console.print(f"[blue]Strategy: {strategy}[/blue]")
-    console.print(f"[blue]Timeframe: {timeframe}[/blue]")
+    console.print(f"[bold green]Running backtest...[/bold green]")
+    console.print(f"[blue]Strategy:[/blue] {strategy}")
+    console.print(f"[blue]Timeframe:[/blue] {timeframe}")
     if timerange:
-        console.print(f"[blue]Time range: {timerange}[/blue]")
+        console.print(f"[blue]Time range:[/blue] {timerange}")
+    console.print(f"[blue]Initial balance:[/blue] {initial_balance}")
+    console.print(f"[blue]Fee rate:[/blue] {fee * 100:.2f}%")
 
-    # TODO: Implement backtesting logic
-    # from .backtesting import BacktestEngine
-    # engine = BacktestEngine(config=config or ctx.obj['config'])
-    # engine.run(strategy=strategy, timeframe=timeframe, timerange=timerange)
+    config_path = config or ctx.obj.get('config')
+    try:
+        from .configuration import Config
+        config_obj = Config(config_path)
+    except FileNotFoundError:
+        config_obj = Config()
+
+    from .backtesting import BacktestEngine
+
+    engine = BacktestEngine(config=config_obj)
+
+    try:
+        result = engine.run(
+            strategy_name=strategy,
+            timeframe=timeframe,
+            timerange=timerange,
+            stake_amount=stake_amount,
+            max_open_trades=max_open_trades,
+            initial_balance=initial_balance,
+            fee=fee,
+            export=export,
+        )
+
+        m = result.metrics
+        console.print()
+        console.print(Panel(
+            f"[bold cyan]Strategy: {result.strategy_name}[/bold cyan]",
+            expand=False,
+        ))
+
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+
+        table.add_row("Total Trades", str(m.total_trades))
+        table.add_row("Winning Trades", str(m.winning_trades))
+        table.add_row("Losing Trades", str(m.losing_trades))
+        table.add_row("Win Rate", f"{m.win_rate * 100:.2f}%")
+        table.add_row("Total Profit", f"{m.total_profit:.4f}")
+        table.add_row("Total Profit %", f"{m.total_profit_pct:.2f}%")
+        table.add_row("Avg Profit %", f"{m.avg_profit_pct:.2f}%")
+        table.add_row("Profit Factor", f"{m.profit_factor:.2f}")
+        table.add_row("Sharpe Ratio", f"{m.sharpe_ratio:.2f}")
+        table.add_row("Sortino Ratio", f"{m.sortino_ratio:.2f}")
+        table.add_row("Max Drawdown", f"{m.max_drawdown:.2f}%")
+        table.add_row("Avg Duration", f"{m.avg_trade_duration:.1f}h")
+        table.add_row("Initial Balance", f"{m.initial_balance:.2f}")
+        table.add_row("Final Balance", f"{m.final_balance:.2f}")
+
+        console.print(table)
+
+        if export:
+            console.print(f"\n[green]Results exported to: {export}[/green]")
+        else:
+            saved = result.save()
+            console.print(f"\n[green]Results saved to: {saved}[/green]")
+
+    except Exception as e:
+        console.print(f"\n[red]Backtest error: {e}[/red]")
+        logger.exception("Backtest error")
+        sys.exit(1)
 
 
 # Import download_data from commands
@@ -191,27 +262,111 @@ from .commands.data_commands import download_data as download_data_cmd
 
 
 @cli.command()
-@click.option('--hyperopt', type=str, help='Hyperopt class name')
+@click.option('--strategy', '-s', type=str, required=True, help='Strategy name')
 @click.option('--epochs', type=int, default=100, help='Number of optimization epochs')
 @click.option('--spaces', type=str, default='all', help='Optimization spaces')
-@click.option('--jobs', type=int, default=-1, help='Number of parallel jobs')
+@click.option('--loss', type=str, default='default', help='Loss function (default, sharpe, winratio, profit_drawdown)')
+@click.option('--min-trades', type=int, default=10, help='Minimum trades required')
+@click.option('--timeframe', '-tf', type=str, default='5m', help='Timeframe')
+@click.option('--timerange', type=str, help='Time range (e.g., 20240101-20241231)')
+@click.option('--config', '-c', type=str, help='Configuration file')
+@click.option('--stake-amount', type=float, help='Stake amount per trade')
+@click.option('--initial-balance', type=float, default=1000, help='Initial balance')
+@click.option('--max-open-trades', type=int, help='Max concurrent open trades')
+@click.option('--fee', type=float, default=0.001, help='Fee rate')
+@click.option('--export', type=str, help='Export results to JSON file')
+@click.option('--random-state', type=int, help='Random seed for reproducibility')
 @click.pass_context
-def hyperopt(ctx, hyperopt: Optional[str], epochs: int, spaces: str, jobs: int):
+def hyperopt(ctx, strategy: str, epochs: int, spaces: str, loss: str,
+             min_trades: int, timeframe: str, timerange: Optional[str],
+             config: Optional[str], stake_amount: Optional[float],
+             initial_balance: float, max_open_trades: Optional[int],
+             fee: float, export: Optional[str], random_state: Optional[int]):
     """
     Run hyperparameter optimization
 
     Examples:
-        bullseye hyperopt --hyperopt MyHyperOpt --epochs 100
-        bullseye hyperopt --spaces buy,sell
+        bullseye hyperopt --strategy MyStrategy --epochs 100
+        bullseye hyperopt --strategy MyStrategy --loss sharpe --epochs 200
+        bullseye hyperopt --strategy MyStrategy --min-trades 20 --timerange 20240101-20241231
     """
-    console.print(f"[green]Running hyperopt...[/green]")
-    console.print(f"[blue]Epochs: {epochs}[/blue]")
-    console.print(f"[blue]Spaces: {spaces}[/blue]")
+    console.print(f"[bold green]Running hyperopt...[/bold green]")
+    console.print(f"[blue]Strategy:[/blue] {strategy}")
+    console.print(f"[blue]Epochs:[/blue] {epochs}")
+    console.print(f"[blue]Spaces:[/blue] {spaces}")
+    console.print(f"[blue]Loss function:[/blue] {loss}")
+    console.print(f"[blue]Min trades:[/blue] {min_trades}")
 
-    # TODO: Implement hyperopt logic
-    # from .optimize import HyperoptEngine
-    # engine = HyperoptEngine(config=ctx.obj['config'])
-    # engine.run(hyperopt=hyperopt, epochs=epochs, spaces=spaces, jobs=jobs)
+    config_path = config or ctx.obj.get('config')
+    try:
+        from .configuration import Config
+        config_obj = Config(config_path)
+    except FileNotFoundError:
+        config_obj = Config()
+
+    from .optimize import HyperoptEngine
+
+    engine = HyperoptEngine(config=config_obj)
+
+    try:
+        engine.run(
+            strategy_name=strategy,
+            timeframe=timeframe,
+            timerange=timerange,
+            epochs=epochs,
+            spaces=spaces,
+            loss_function=loss,
+            min_trades=min_trades,
+            stake_amount=stake_amount,
+            max_open_trades=max_open_trades,
+            initial_balance=initial_balance,
+            fee=fee,
+            export=export,
+            random_state=random_state,
+        )
+
+        best = engine.best_params
+        best_metrics = engine.best_metrics
+
+        console.print()
+        console.print(Panel(
+            f"[bold cyan]Best Result (loss={engine.best_loss:.6f})[/bold cyan]",
+            expand=False,
+        ))
+
+        if best:
+            param_table = Table(show_header=True, header_style="bold magenta")
+            param_table.add_column("Parameter", style="cyan")
+            param_table.add_column("Value", style="green")
+
+            for param, value in sorted(best.items()):
+                param_table.add_row(str(param), str(value))
+
+            console.print(param_table)
+
+        if best_metrics:
+            metrics_table = Table(show_header=True, header_style="bold magenta")
+            metrics_table.add_column("Metric", style="cyan")
+            metrics_table.add_column("Value", style="green")
+
+            for key, value in sorted(best_metrics.items()):
+                if isinstance(value, float):
+                    metrics_table.add_row(key, f"{value:.4f}")
+                else:
+                    metrics_table.add_row(key, str(value))
+
+            console.print(metrics_table)
+
+        if export:
+            console.print(f"\n[green]Results exported to: {export}[/green]")
+        else:
+            saved = engine._export_results()
+            console.print(f"\n[green]Results saved to: {saved}[/green]")
+
+    except Exception as e:
+        console.print(f"\n[red]Hyperopt error: {e}[/red]")
+        logger.exception("Hyperopt error")
+        sys.exit(1)
 
 
 # ==================== Strategy Commands ====================

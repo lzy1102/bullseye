@@ -12,8 +12,10 @@ A quantitative trading framework compatible with [Freqtrade](https://github.com/
   - International: IB (Interactive Brokers), TAP, DA
 - **Unified Interface** - Same strategy can trade across different markets
 - **Event-Driven Architecture** - High-performance event engine inspired by VeighNa (vnpy)
-- **Multiple Backtesting Modes** - Vectorized backtesting, hyperparameter optimization
+- **Backtesting Engine** - Iterative backtesting with stoploss, trailing stop, ROI, and custom exit support
+- **Hyperparameter Optimization** - Random search optimization with multiple loss functions
 - **Flexible Database** - SQLite (default), PostgreSQL, MySQL support
+- **Structured Exception Hierarchy** - Clear error handling with specific exception types
 
 ## Installation
 
@@ -191,13 +193,58 @@ future:
   md_address: "tcp://180.168.146.187:10131"
 ```
 
-### 3. Run Backtesting
+### 3. Download Data
 
 ```bash
-bullseye backtesting --strategy MyStrategy --config config.yaml
+# Download crypto data
+bullseye download-data --exchange binance --pairs BTC/USDT ETH/USDT --timeframe 5m
+
+# Download stock data (requires AKShare or TuShare)
+bullseye download-data --market stock --pairs 000001.SZ 000002.SZ
 ```
 
-### 4. Run Live Trading
+### 4. Run Backtesting
+
+```bash
+# Basic backtesting
+bullseye backtesting --strategy MyStrategy
+
+# With time range and options
+bullseye backtesting --strategy MyStrategy \
+    --timerange 20240101-20241231 \
+    --initial-balance 10000 \
+    --fee 0.001 \
+    --export results.json
+```
+
+Backtesting results include comprehensive metrics:
+- Win rate, profit factor, Sharpe/Sortino/Calmar ratios
+- Maximum drawdown, average trade duration
+- Per-pair performance breakdown
+- JSON export for further analysis
+
+### 5. Run Hyperparameter Optimization
+
+```bash
+# Basic optimization
+bullseye hyperopt --strategy MyStrategy --epochs 100
+
+# With specific loss function and constraints
+bullseye hyperopt --strategy MyStrategy \
+    --loss sharpe \
+    --epochs 200 \
+    --min-trades 20 \
+    --timerange 20240101-20241231 \
+    --random-state 42
+```
+
+Available loss functions:
+- `default` - Maximize total profit
+- `sharpe` - Maximize Sharpe ratio
+- `winratio` - Maximize win rate (with minimum trade requirement)
+- `profit_drawdown` - Maximize profit/drawdown ratio
+
+### 6. Run Live Trading
 
 ```bash
 bullseye trade --strategy MyStrategy --config config.yaml --dry
@@ -212,25 +259,32 @@ bullseye trade --dry              # Dry run (paper trading)
 bullseye trade --live             # Live trading
 
 # Backtesting
-bullseye backtesting              # Run backtest
 bullseye backtesting --strategy MyStrategy
-bullseye backtesting --timerange 20240101-20241231
+bullseye backtesting --strategy MyStrategy --timerange 20240101-20241231
+bullseye backtesting --strategy MyStrategy --initial-balance 10000 --fee 0.001
 
 # Download Data
 bullseye download-data            # Download market data
 bullseye download-data --exchange binance --pairs BTC/USDT ETH/USDT
 
 # Hyperopt
-bullseye hyperopt                 # Hyperparameter optimization
-bullseye hyperopt --epochs 100
+bullseye hyperopt --strategy MyStrategy --epochs 100
+bullseye hyperopt --strategy MyStrategy --loss sharpe --min-trades 20
 
 # Strategy Management
 bullseye new-strategy             # Create new strategy template
 bullseye list-strategies          # List all strategies
 
-# Analysis
-bullseye plot-dataframe           # Plot analysis
-bullseye plot-profit              # Plot profit curve
+# Configuration
+bullseye new-config               # Create new configuration file
+bullseye show-config              # Show current configuration
+
+# Information
+bullseye info                     # Show system information
+bullseye version                  # Show version
+bullseye list-exchanges           # List supported exchanges
+bullseye list-timeframes          # List supported timeframes
+bullseye list-data                # List downloaded data
 ```
 
 ## Architecture
@@ -240,17 +294,84 @@ bullseye/
 ├── trader/           # Core trading engine
 │   ├── eventengine.py
 │   ├── engine.py
-│   └── object/        # Data objects
+│   └── object/        # Data objects (Order, Trade, Tick, Bar, Kline, Position, Account)
 ├── gateway/          # Trading gateways
 │   ├── base.py
 │   ├── crypto/        # CCXT gateways
 │   ├── stock/         # Stock gateways (XTP, TORA, OST, EMT)
-│   └── future/        # Future gateways (CTP, MiniCTP, FEMAS)
+│   ├── future/        # Future gateways (CTP, MiniCTP, FEMAS)
+│   ├── international/ # International gateways (IB, TAP, DA)
+│   └── dryrun/        # Dry run (paper trading) gateway
 ├── strategy/         # Strategy interface (Freqtrade compatible)
+│   ├── interface.py   # IStrategy v3 interface
+│   └── template.py    # Strategy templates
 ├── data/             # Data providers
+│   ├── dataprovider.py
+│   ├── history/       # Historical data handlers (Parquet, Feather, JSON)
+│   └── datafeed/      # External data feeds (AKShare, TuShare)
 ├── backtesting/      # Backtesting engine
-└── persistence/      # Database models
+│   ├── engine.py      # BacktestEngine
+│   └── result.py      # BacktestResult, BacktestTrade, BacktestMetrics
+├── optimize/         # Optimization tools
+│   ├── hyperopt.py    # HyperoptEngine with multiple loss functions
+│   └── analysis/      # Lookahead and recursive bias analysis
+├── order/            # Order management
+│   ├── order_executor.py
+│   ├── position_manager.py
+│   └── settlement.py
+├── wallets/          # Wallet management
+├── persistence/      # Database models (SQLAlchemy)
+├── rpc/              # Remote procedure calls
+│   ├── telegram.py    # Telegram notifications
+│   ├── webhook.py     # Webhook notifications
+│   └── api_server/    # REST API server (FastAPI)
+├── configuration/    # Configuration management
+├── commands/         # CLI command implementations
+└── exceptions.py     # Structured exception hierarchy
 ```
+
+## Exception Hierarchy
+
+Bullseye provides a structured exception hierarchy for clear error handling:
+
+```
+BullseyeError
+├── ConfigurationError
+├── StrategyError
+│   ├── StrategyLoadError
+│   └── StrategyValidationError
+├── DataError
+│   ├── DataNotFoundError
+│   └── DataFormatError
+├── GatewayError
+│   ├── GatewayConnectionError
+│   ├── GatewayAuthenticationError
+│   └── GatewayRateLimitError
+├── OrderError
+│   ├── InsufficientFundsError
+│   └── OrderExecutionError
+├── PositionError
+├── BacktestError
+├── HyperoptError
+├── WalletError
+└── PersistenceError
+```
+
+## Testing
+
+```bash
+# Run all tests
+pytest tests/ -v
+
+# Run specific test modules
+pytest tests/test_backtesting/ -v
+pytest tests/test_optimize/ -v
+
+# Run with coverage
+pytest tests/ --cov=bullseye --cov-report=html
+```
+
+Current test status: **141 passed, 13 skipped** (skipped tests require external dependencies like akshare/tushare)
 
 ## Compatibility with Freqtrade
 
@@ -261,10 +382,13 @@ bullseye/
 | Hyperoptable Parameters | ✅ | ✅ |
 | DataProvider | ✅ | ✅ |
 | Callbacks | ✅ | ✅ |
+| Backtesting | ✅ | ✅ |
+| Hyperopt | ✅ | ✅ |
 | Crypto Trading | ✅ (CCXT) | ✅ (CCXT) |
 | Stock Trading | ✅ | ❌ |
 | Futures Trading | ✅ | ❌ |
 | Event-Driven | ✅ | ❌ |
+| Structured Exceptions | ✅ | ❌ |
 
 ## License
 

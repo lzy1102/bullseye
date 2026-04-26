@@ -116,6 +116,10 @@ class IStrategy:
         """Called when bot starts"""
         pass
 
+    def bot_stop(self, **kwargs) -> None:
+        """Called when bot stops"""
+        pass
+
     def bot_loop_start(self, **kwargs) -> None:
         """Called at start of each bot loop"""
         pass

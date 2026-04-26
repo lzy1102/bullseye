@@ -25,9 +25,9 @@ class MainEngine:
     3. Providing unified trading interface
     """
 
-    def __init__(self):
+    def __init__(self, event_engine: Optional[EventEngine] = None):
         """Initialize main engine"""
-        self.event_engine = EventEngine()
+        self.event_engine = event_engine or EventEngine()
         self.event_engine.start()
 
         self._gateways: Dict[str, "BaseGateway"] = {}
