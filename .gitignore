@@ -88,31 +88,55 @@ venv.bak/
 .dmypy.json
 dmypy.json
 
-# Bullseye specific
+# ============================================================================
+# Bullseye specific - User data and generated files
+# ============================================================================
+
+# User data directories (keep .gitkeep)
 user_data/data/*
 !user_data/data/.gitkeep
 user_data/logs/*
 !user_data/logs/.gitkeep
 user_data/notebooks/.ipynb_checkpoints/
+
+# User configs (templates like config.yaml.example are NOT ignored)
+user_data/config.*
+user_data/strategies/*.json
+user_data/strategies/*.yaml
+user_data/strategies/*.yml
+
+# Database files
 *.db
 *.sqlite
 *.sqlite3
 tradesv3.sqlite
 tradesv3.sqlite-journal
 
-# Backtesting results
+# Backtesting and optimization results
 backtest_results/
 hyperopt_results/
+user_data/backtest_results/
+user_data/hyperopt/
+
+# Generated reports and plots
 *.json
 !config.json
+!package.json
+!package-lock.json
 *.pkl
+*.h5
+*.hdf5
 
-# Credentials
+# Credentials and secrets
 secrets.yaml
+secrets.json
 config.yaml
+config.yml
 *.secret
 .api_key
 .token
+.env.local
+.env.*.local
 
 # OS
 .DS_Store
