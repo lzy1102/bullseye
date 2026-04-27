@@ -34,7 +34,7 @@ ENV PYTHONUNBUFFERED=1 \
     PATH="/app/venv/bin:$PATH" \
     BULLSEYE_HOME="/app" \
     BULLSEYE_USER_DATA="/app/user_data" \
-    BULLSEYE_CONFIG="/app/config.yaml"
+    BULLSEYE_CONFIG="/app/user_data/config.yaml"
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

@@ -1,5 +1,6 @@
 #!/bin/bash
 # Bullseye Framework - Docker Entrypoint Script
+# Compatible with Freqtrade command style
 
 set -e
 
@@ -10,7 +11,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Configuration
-CONFIG_FILE="${BULLSEYE_CONFIG:-/app/config.yaml}"
+CONFIG_FILE="${BULLSEYE_CONFIG:-/app/user_data/config.yaml}"
 USER_DATA_DIR="${BULLSEYE_USER_DATA:-/app/user_data}"
 BULLSEYE_HOME="${BULLSEYE_HOME:-/app}"
 
@@ -40,36 +41,16 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Function to create default config if not exists
-create_default_config() {
-    if [ ! -f "${CONFIG_FILE}" ]; then
-        if [ -f "${BULLSEYE_HOME}/config.yaml.example" ]; then
-            log_warn "Config file not found. Creating from example..."
-            cp "${BULLSEYE_HOME}/config.yaml.example" "${CONFIG_FILE}"
-            log_info "Default config created at: ${CONFIG_FILE}"
-            log_warn "Please edit the config file and restart the container."
-        else
-            log_error "No config file or example found!"
-            exit 1
-        fi
-    fi
-}
-
 # Function to create necessary directories
 create_directories() {
     log_info "Creating necessary directories..."
-    mkdir -p "${USER_DATA_DIR}"/{strategies,data,logs,backtest_results}
+    mkdir -p "${USER_DATA_DIR}"/{strategies,data,logs,backtest_results,hyperopt}
     mkdir -p "${USER_DATA_DIR}/data"/{crypto,stock,futures}
 }
 
 # Function to verify Python installation
 verify_python() {
     log_info "Verifying Python installation..."
-
-    if ! python -c "import pandas" 2>/dev/null; then
-        log_error "pandas not installed. Installing dependencies..."
-        pip install -q -r "${BULLSEYE_HOME}/requirements.txt"
-    fi
 
     # Verify key modules
     local modules=("pandas" "numpy" "ccxt" "sqlalchemy" "pydantic" "click" "rich")
@@ -83,50 +64,35 @@ verify_python() {
     echo ""
 }
 
-# Function to wait for database (if using PostgreSQL)
-wait_for_db() {
-    if [[ "${DB_URL:-}" == postgresql://* ]]; then
-        log_info "Waiting for PostgreSQL database..."
-
-        local db_host=$(echo "$DB_URL" | awk -F[@/] '{print $4}')
-        local db_port=$(echo "$DB_URL" | awk -F[@:] '{print $5}' | cut -d'/' -f1)
-
-        timeout=30
-        while ! nc -z "$db_host" "${db_port:-5432}" 2>/dev/null; do
-            timeout=$((timeout - 1))
-            if [ $timeout -le 0 ]; then
-                log_error "Database connection timeout!"
-                exit 1
-            fi
-            echo -n "."
-            sleep 1
-        done
-        echo ""
-        log_info "Database is ready!"
-    fi
-}
-
 # Function to show usage
 show_usage() {
     cat << EOF
-Usage: docker run [OPTIONS] bullseye [COMMAND] [ARGS]
+Usage: docker-compose run --rm bullseye [COMMAND] [ARGS]
 
 Commands:
-  trade              Start trading bot (default)
-    --dry            Run in dry-run (paper trading) mode
-    --live           Run in live trading mode
+  download-data      Download historical data
+    --exchange NAME  Exchange name (binance, okx, etc.)
+    --pairs PAIRS    Trading pairs (comma or space separated)
+    --timeframes TF  Timeframes (comma separated)
+    --timerange RANGE Time range (YYYYMMDD-YYYYMMDD)
+    --prepend        Prepend to existing data
 
   backtesting        Run backtesting
     --strategy NAME  Strategy name to use
     --timerange RANGE Time range for backtesting
-
-  download-data      Download historical data
-    --exchange NAME  Exchange name (binance, okx, etc.)
-    --pairs PAIRS    Trading pairs
+    --timeframe TF   Timeframe
 
   hyperopt           Run hyperparameter optimization
+    --strategy NAME  Strategy name
+    --hyperopt-loss NAME  Loss function (SharpeHyperOptLoss, etc.)
     --epochs N       Number of epochs
-    --spaces SPACES  Spaces to optimize
+    --spaces SPACES  Spaces to optimize (buy, sell, roi, stoploss, trailing, all)
+
+  hyperopt-list      List hyperopt results
+    --best           Show only best results
+
+  hyperopt-show      Show hyperopt result details
+    --index N        Result index
 
   new-strategy       Create a new strategy
     --strategy NAME  Strategy name
@@ -137,16 +103,14 @@ Commands:
 
   list-timeframes    List supported timeframes
 
-  version            Show version info
-
-  info               Show system info
-
-  shell              Start interactive shell
+  trade              Start trading bot
+    --dry            Dry-run mode
+    --live           Live trading mode
 
 Examples:
-  docker run bullseye trade --dry
-  docker run bullseye backtesting --strategy SampleStrategy --timerange 20240101-20241231
-  docker run -v ./user_data:/app/user_data bullseye download-data --exchange binance
+  docker-compose run --rm bullseye download-data --exchange okx --pairs BTC/USDT --timeframes 30m
+  docker-compose run --rm bullseye backtesting --strategy MyStrategy --timerange 20240101-20241231
+  docker-compose run --rm bullseye hyperopt --strategy MyStrategy --hyperopt-loss SharpeHyperOptLoss --epochs 1000
 
 For more information, see: https://github.com/yourusername/bullseye
 EOF
@@ -155,9 +119,7 @@ EOF
 # Main setup
 setup() {
     create_directories
-    create_default_config
     verify_python
-    wait_for_db
 }
 
 # Run setup
@@ -165,8 +127,9 @@ setup
 
 # Execute command
 if [ $# -eq 0 ]; then
-    log_info "No command specified. Starting default: trade --dry"
-    exec python -m bullseye trade --dry
+    log_info "No command specified. Showing usage..."
+    show_usage
+    exit 0
 else
     case "$1" in
         shell|bash)

@@ -44,6 +44,173 @@ def get_data_dir(exchange: str, user_data_dir: str = "user_data") -> Path:
     return Path(user_data_dir) / "data" / exchange
 
 
+def _download_data_impl(exchange: Optional[str], pairs: Optional[str], timeframes: Optional[str],
+                        days: int, timerange: Optional[str], data_format: str, prepend: bool,
+                        erase: bool, config: Optional[str], dry_run: bool):
+    """
+    Internal implementation for downloading historical market data.
+    Supports pagination to download large date ranges.
+    """
+    import time as time_module
+    try:
+        import ccxt
+    except ImportError:
+        console.print("[red]CCXT not installed. Install with: pip install ccxt[/red]")
+        sys.exit(1)
+
+    # Load configuration
+    try:
+        from ..configuration import Config
+        config_obj = Config(config or "config.yaml")
+        exchange = exchange or config_obj.get('exchange.name', 'binance')
+        pairs_list = pairs.split(',') if pairs else config_obj.get('pairlist', ['BTC/USDT', 'ETH/USDT'])
+        timeframes_list = timeframes.split(',') if timeframes else ['5m']
+    except:
+        exchange = exchange or 'binance'
+        pairs_list = pairs.split(',') if pairs else ['BTC/USDT', 'ETH/USDT']
+        timeframes_list = timeframes.split(',') if timeframes else ['5m']
+
+    # Parse timerange
+    if timerange:
+        try:
+            start_str, end_str = timerange.split('-')
+            start_date = datetime.strptime(start_str, '%Y%m%d')
+            end_date = datetime.strptime(end_str, '%Y%m%d')
+        except ValueError:
+            console.print("[red]Invalid timerange format. Use: YYYYMMDD-YYYYMMDD[/red]")
+            sys.exit(1)
+    else:
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+
+    console.print(f"[bold green]Downloading Market Data[/bold green]")
+    console.print(f"[blue]Exchange:[/blue] {exchange}")
+    console.print(f"[blue]Pairs:[/blue] {', '.join(pairs_list)}")
+    console.print(f"[blue]Timeframes:[/blue] {', '.join(timeframes_list)}")
+    console.print(f"[blue]Date Range:[/blue] {start_date.date()} to {end_date.date()}")
+    console.print(f"[blue]Format:[/blue] {data_format}")
+
+    if dry_run:
+        console.print("\n[yellow]Dry run mode - no data will be downloaded[/yellow]")
+        return
+
+    # Create exchange instance
+    try:
+        exchange_class = getattr(ccxt, exchange.lower())
+        exchange_instance = exchange_class({'enableRateLimit': True})
+    except AttributeError:
+        console.print(f"[red]Exchange '{exchange}' not supported by CCXT[/red]")
+        sys.exit(1)
+
+    # Create data directory
+    data_dir = get_data_dir(exchange)
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    import pandas as pd
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn, TimeRemainingColumn
+
+    total_pairs = len(pairs_list) * len(timeframes_list)
+    pair_idx = 0
+
+    for pair in pairs_list:
+        for timeframe in timeframes_list:
+            pair_idx += 1
+            start_time = time_module.time()
+
+            console.print(f"\n[cyan][{pair_idx}/{total_pairs}] {pair} {timeframe}[/cyan]")
+
+            try:
+                # Calculate expected candles
+                timeframe_minutes = timeframe_to_minutes(timeframe)
+                total_minutes = (end_date - start_date).total_seconds() / 60
+                expected_candles = int(total_minutes / timeframe_minutes)
+
+                # Download with pagination
+                all_ohlcv = []
+                current_since = int(start_date.timestamp() * 1000)
+                end_timestamp = int(end_date.timestamp() * 1000)
+                page = 0
+
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    BarColumn(),
+                    TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                    TimeElapsedColumn(),
+                    TimeRemainingColumn(),
+                    console=console,
+                    transient=True,
+                ) as progress:
+                    task_id = progress.add_task(
+                        description=f"Downloading {expected_candles} candles...",
+                        total=expected_candles,
+                    )
+
+                    while current_since < end_timestamp:
+                        page += 1
+                        try:
+                            ohlcv = exchange_instance.fetch_ohlcv(pair, timeframe, since=current_since, limit=1000)
+                        except Exception as e:
+                            console.print(f"[yellow]  Warning: fetch error on page {page}: {e}[/yellow]")
+                            break
+
+                        if not ohlcv or len(ohlcv) == 0:
+                            break
+
+                        # Filter data within date range
+                        for candle in ohlcv:
+                            if candle[0] <= end_timestamp:
+                                all_ohlcv.append(candle)
+
+                        # Update progress
+                        progress.update(task_id, completed=len(all_ohlcv))
+
+                        # Get timestamp of last candle + 1 ms for next page
+                        last_timestamp = ohlcv[-1][0]
+                        if last_timestamp <= current_since:
+                            break  # Prevent infinite loop
+                        current_since = last_timestamp + 1
+
+                        # Rate limiting
+                        time_module.sleep(exchange_instance.rateLimit / 1000)
+
+                # Convert to DataFrame
+                if not all_ohlcv:
+                    console.print(f"[yellow]  No data downloaded[/yellow]")
+                    continue
+
+                df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['date'] = pd.to_datetime(df['timestamp'], unit='ms')
+
+                # Remove duplicates (same timestamp)
+                df = df.drop_duplicates(subset=['timestamp'], keep='first')
+                df = df.sort_values('timestamp')
+
+                # Save data
+                filename = f"{pair.replace('/', '_')}-{timeframe}.{data_format}"
+                filepath = data_dir / filename
+
+                if data_format == 'json':
+                    df.to_json(filepath, orient='records', date_format='iso')
+                elif data_format == 'feather':
+                    df.to_feather(filepath)
+                elif data_format == 'parquet':
+                    df.to_parquet(filepath)
+
+                elapsed = time_module.time() - start_time
+                candles_per_sec = len(df) / elapsed if elapsed > 0 else 0
+                console.print(f"[green]  ✓ Downloaded {len(df)} candles "
+                             f"({df['date'].min()} to {df['date'].max()}) "
+                             f"in {elapsed:.1f}s ({candles_per_sec:.0f} candles/s)[/green]")
+
+            except Exception as e:
+                console.print(f"[red]  ✗ Error: {e}[/red]")
+                logger.exception("Download error")
+
+    console.print(f"\n[green]✓ Data download complete![/green]")
+    console.print(f"[blue]Data saved to:[/blue] {data_dir}")
+
+
 @click.command(name='download-data')
 @click.option('--exchange', '-e', type=str, help='Exchange name')
 @click.option('--pairs', '-p', type=str, help='Trading pairs (comma-separated)')
@@ -60,118 +227,27 @@ def download_data(exchange: Optional[str], pairs: Optional[str], timeframes: Opt
                   erase: bool, config: Optional[str], dry_run: bool):
     """
     Download historical market data
-    
+
     Downloads OHLCV data from the exchange for backtesting and analysis.
-    
+
     Examples:
         bullseye download-data --exchange binance --pairs BTC/USDT,ETH/USDT
         bullseye download-data --days 30 --timeframes 5m,1h
         bullseye download-data --timerange 20240101-20241231
         bullseye download-data --exchange binance --dry-run
     """
-    try:
-        import ccxt
-    except ImportError:
-        console.print("[red]CCXT not installed. Install with: pip install ccxt[/red]")
-        sys.exit(1)
-    
-    # Load configuration
-    try:
-        from ..configuration import Config
-        config_obj = Config(config or "config.yaml")
-        exchange = exchange or config_obj.get('exchange.name', 'binance')
-        pairs_list = pairs.split(',') if pairs else config_obj.get('pairlist', ['BTC/USDT', 'ETH/USDT'])
-        timeframes_list = timeframes.split(',') if timeframes else ['5m']
-    except:
-        exchange = exchange or 'binance'
-        pairs_list = pairs.split(',') if pairs else ['BTC/USDT', 'ETH/USDT']
-        timeframes_list = timeframes.split(',') if timeframes else ['5m']
-    
-    # Parse timerange
-    if timerange:
-        try:
-            start_str, end_str = timerange.split('-')
-            start_date = datetime.strptime(start_str, '%Y%m%d')
-            end_date = datetime.strptime(end_str, '%Y%m%d')
-        except ValueError:
-            console.print("[red]Invalid timerange format. Use: YYYYMMDD-YYYYMMDD[/red]")
-            sys.exit(1)
-    else:
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=days)
-    
-    console.print(f"[bold green]Downloading Market Data[/bold green]")
-    console.print(f"[blue]Exchange:[/blue] {exchange}")
-    console.print(f"[blue]Pairs:[/blue] {', '.join(pairs_list)}")
-    console.print(f"[blue]Timeframes:[/blue] {', '.join(timeframes_list)}")
-    console.print(f"[blue]Date Range:[/blue] {start_date.date()} to {end_date.date()}")
-    console.print(f"[blue]Format:[/blue] {data_format}")
-    
-    if dry_run:
-        console.print("\n[yellow]Dry run mode - no data will be downloaded[/yellow]")
-        return
-    
-    # Create exchange instance
-    try:
-        exchange_class = getattr(ccxt, exchange.lower())
-        exchange_instance = exchange_class({'enableRateLimit': True})
-    except AttributeError:
-        console.print(f"[red]Exchange '{exchange}' not supported by CCXT[/red]")
-        sys.exit(1)
-    
-    # Create data directory
-    data_dir = get_data_dir(exchange)
-    data_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Download data
-    total_downloads = len(pairs_list) * len(timeframes_list)
-    current = 0
-    
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console
-    ) as progress:
-        for pair in pairs_list:
-            for timeframe in timeframes_list:
-                current += 1
-                task_id = progress.add_task(
-                    description=f"[{current}/{total_downloads}] Downloading {pair} {timeframe}...",
-                    total=None
-                )
-                
-                try:
-                    # Download OHLCV data
-                    since = int(start_date.timestamp() * 1000)
-                    ohlcv = exchange_instance.fetch_ohlcv(pair, timeframe, since=since)
-                    
-                    if not ohlcv:
-                        progress.update(task_id, description=f"[yellow]No data for {pair} {timeframe}[/yellow]")
-                        continue
-                    
-                    # Convert to DataFrame
-                    import pandas as pd
-                    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                    df['date'] = pd.to_datetime(df['timestamp'], unit='ms')
-                    
-                    # Save data
-                    filename = f"{pair.replace('/', '_')}-{timeframe}.{data_format}"
-                    filepath = data_dir / filename
-                    
-                    if data_format == 'json':
-                        df.to_json(filepath, orient='records', date_format='iso')
-                    elif data_format == 'feather':
-                        df.to_feather(filepath)
-                    elif data_format == 'parquet':
-                        df.to_parquet(filepath)
-                    
-                    progress.update(task_id, description=f"[green]✓ Downloaded {pair} {timeframe} ({len(df)} candles)[/green]")
-                    
-                except Exception as e:
-                    progress.update(task_id, description=f"[red]✗ Error downloading {pair} {timeframe}: {e}[/red]")
-    
-    console.print(f"\n[green]✓ Data download complete![/green]")
-    console.print(f"[blue]Data saved to:[/blue] {data_dir}")
+    _download_data_impl(
+        exchange=exchange,
+        pairs=pairs,
+        timeframes=timeframes,
+        days=days,
+        timerange=timerange,
+        data_format=data_format,
+        prepend=prepend,
+        erase=erase,
+        config=config,
+        dry_run=dry_run,
+    )
 
 
 @click.command(name='list-data')

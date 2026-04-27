@@ -51,6 +51,29 @@ class SharpeHyperoptLoss(HyperoptLoss):
         return -result.metrics.sharpe_ratio
 
 
+class SortinoHyperoptLoss(HyperoptLoss):
+    """Maximize Sortino ratio (only penalizes downside volatility)."""
+
+    @staticmethod
+    def calculate(result: BacktestResult) -> float:
+        if result.metrics.sortino_ratio == 0:
+            return -result.metrics.total_profit
+        return -result.metrics.sortino_ratio
+
+
+class CalmarHyperoptLoss(HyperoptLoss):
+    """Maximize Calmar ratio (profit / max drawdown)."""
+
+    @staticmethod
+    def calculate(result: BacktestResult) -> float:
+        profit = result.metrics.total_profit_pct
+        drawdown = result.metrics.max_drawdown
+        if drawdown == 0:
+            return -profit
+        calmar = profit / drawdown if drawdown > 0 else profit
+        return -calmar
+
+
 class WinRatioHyperoptLoss(HyperoptLoss):
     """Maximize win rate while requiring minimum trades."""
 
@@ -73,11 +96,70 @@ class ProfitDrawdownHyperoptLoss(HyperoptLoss):
         return -(profit / drawdown) if drawdown > 0 else -profit
 
 
+class OnlyProfitHyperoptLoss(HyperoptLoss):
+    """Only optimize total profit, ignore risk."""
+
+    @staticmethod
+    def calculate(result: BacktestResult) -> float:
+        return -result.metrics.total_profit
+
+
+class OnlyProfitHyperoptLossDaily(HyperoptLoss):
+    """Optimize daily profit (total profit / days)."""
+
+    @staticmethod
+    def calculate(result: BacktestResult) -> float:
+        total_profit = result.metrics.total_profit
+        # Estimate days from trade count (rough approximation)
+        days = max(1, result.metrics.total_trades / 2)
+        daily_profit = total_profit / days
+        return -daily_profit
+
+
+class MaxDrawdownHyperoptLoss(HyperoptLoss):
+    """Minimize maximum drawdown."""
+
+    @staticmethod
+    def calculate(result: BacktestResult) -> float:
+        return result.metrics.max_drawdown
+
+
+class ExpectedDrawdownHyperoptLoss(HyperoptLoss):
+    """Minimize expected drawdown (average of significant drawdowns)."""
+
+    @staticmethod
+    def calculate(result: BacktestResult) -> float:
+        return result.metrics.max_drawdown * 0.7
+
+
+class BankruptcyHyperoptLoss(HyperoptLoss):
+    """Avoid bankruptcy risk (penalize high drawdown heavily)."""
+
+    @staticmethod
+    def calculate(result: BacktestResult) -> float:
+        drawdown = result.metrics.max_drawdown
+        profit = result.metrics.total_profit_pct
+        # Heavy penalty for drawdown > 50%
+        if drawdown > 50:
+            return 1000.0
+        # Moderate penalty for drawdown > 30%
+        if drawdown > 30:
+            return 100.0 + drawdown
+        return -profit + drawdown * 2
+
+
 LOSS_FUNCTIONS = {
     "default": HyperoptLoss,
     "sharpe": SharpeHyperoptLoss,
+    "sortino": SortinoHyperoptLoss,
+    "calmar": CalmarHyperoptLoss,
     "winratio": WinRatioHyperoptLoss,
     "profit_drawdown": ProfitDrawdownHyperoptLoss,
+    "onlyprofit": OnlyProfitHyperoptLoss,
+    "onlyprofitdaily": OnlyProfitHyperoptLossDaily,
+    "maxdrawdown": MaxDrawdownHyperoptLoss,
+    "expecteddrawdown": ExpectedDrawdownHyperoptLoss,
+    "bankruptcy": BankruptcyHyperoptLoss,
 }
 
 

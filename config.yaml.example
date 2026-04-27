@@ -1,13 +1,30 @@
-# Bullseye Configuration File
-# This file demonstrates the configuration options for Bullseye
+# ============================================================================
+# Bullseye Configuration File Template
+# ============================================================================
+# Copy this file to config.yaml and modify as needed.
+# All values shown are defaults unless otherwise noted.
+# ============================================================================
 
 # ==================== Basic Settings ====================
-max_open_trades: 5
+# Maximum number of concurrent open trades
+max_open_trades: 3
+
+# Base currency for staking
 stake_currency: USDT
+
+# Amount to stake per trade (use "unlimited" for dynamic sizing)
 stake_amount: 100
+
+# Ratio of total balance available for trading (0.0 - 1.0)
 tradable_balance_ratio: 0.99
+
+# Currency for display purposes
 fiat_display_currency: USD
+
+# Dry run mode (paper trading, no real orders)
 dry_run: true
+
+# Initial balance for dry-run wallet
 dry_run_wallet: 1000
 
 # ==================== Market Type ====================
@@ -35,29 +52,42 @@ settlement:
 
   # Per-pair overrides - use this to override auto-detection
   # Format: "PAIR": "t0" | "t1" | "t2"
-  overrides:
-    # Examples:
-    # "CUSTOM.PAIR": "t1"      # Force custom pair to T+1
-    # "SPECIAL/USDT": "t0"     # Force crypto to T+0
-    # For Chinese A-shares, auto-detection should work correctly,
-    # but you can override if needed:
-    # "000001.SZ": "t1"        # Explicit A-share T+1
+  overrides: {}
+    # "000001.SZ": "t1"
+    # "CUSTOM.PAIR": "t0"
 
   # Default settlement type for unknown pairs (when auto-detection fails)
-  # Set to "t1" if you primarily trade A-shares with custom pair formats
   default: t0
 
-# ==================== Exchange Configuration ====================
+# ==================== Exchange Configuration (Crypto) ====================
 exchange:
+  # Exchange name (binance, okx, bybit, gate, huobi, etc.)
   name: binance
+
+  # API credentials (leave empty for dry-run / data download only)
   key: ""
   secret: ""
-  passphrase: ""  # Required for some exchanges like OKX
+  passphrase: ""  # Required for OKX, Kucoin
+
+  # Use exchange sandbox/testnet
   sandbox: false
+
+  # CCXT extra configuration
   ccxt_config: {}
   ccxt_async_config: {}
 
-# ==================== Stock Configuration (China) ====================
+  # Pair whitelist for trading
+  pair_whitelist:
+    - BTC/USDT
+    - ETH/USDT
+    - BNB/USDT
+
+  # Pair blacklist (never trade these)
+  pair_blacklist:
+    - BTCDOWN/USDT
+    - BTCDOWN/USDT
+
+# ==================== Stock Configuration (China A-Shares) ====================
 stock:
   # Gateway: xtp, tora, ost, emt
   gateway: xtp
@@ -72,7 +102,7 @@ stock:
   td_ip: "120.27.164.138"
   td_port: 6001
 
-  # Datafeed for historical data
+  # Datafeed for historical data: tushare, akshare
   datafeed: tushare
   tushare_token: ""
 
@@ -81,10 +111,10 @@ future:
   # Gateway: ctp, minictp, femas, uft
   gateway: ctp
 
-  # CTP Configuration
+  # CTP Configuration (SimNow by default)
   userid: ""
   password: ""
-  brokerid: "9999"  # SimNow broker ID
+  brokerid: "9999"
   td_address: "tcp://180.168.146.187:10130"
   md_address: "tcp://180.168.146.187:10131"
 
@@ -93,7 +123,18 @@ future:
   auth_code: ""
   product_info: ""
 
+# ==================== International Market Configuration ====================
+international:
+  # Gateway: ib, tap, da
+  gateway: ib
+
+  # IB (Interactive Brokers) Configuration
+  host: "127.0.0.1"
+  port: 7497
+  clientid: 1
+
 # ==================== Pairlist Configuration ====================
+# Pairlists are evaluated in order. Each one filters the list further.
 pairlist:
   - method: StaticPairList
     config:
@@ -102,51 +143,86 @@ pairlist:
         - ETH/USDT
         - BNB/USDT
 
-  - method: VolumePairList
-    config:
-      number_assets: 20
-      sort_key: volume
-      refresh_period: 86400
+  # Uncomment to use dynamic pairlist based on volume
+  # - method: VolumePairList
+  #   config:
+  #     number_assets: 20
+  #     sort_key: volume
+  #     refresh_period: 86400
 
-  - method: PrecisionFilter
-  - method: PriceFilter
-    config:
-      low_price_ratio: 0.01
-
-  - method: SpreadFilter
-    config:
-      max_spread_ratio: 0.005
+  # - method: PrecisionFilter
+  # - method: PriceFilter
+  #   config:
+  #     low_price_ratio: 0.01
+  # - method: SpreadFilter
+  #   config:
+  #     max_spread_ratio: 0.005
 
 # ==================== Strategy Configuration ====================
-strategy: MyStrategy
+# Default strategy name
+strategy: SampleStrategy
+
+# Path to strategy files
 strategy_path: user_data/strategies
+
+# Default timeframe (can be overridden by strategy)
+timeframe: 5m
+
+# ==================== Data Configuration ====================
+# Directory for historical data
+datadir: user_data/data
+
+# Data format for OHLCV data: parquet, feather, json
+dataformat_ohlcv: parquet
+
+# Data format for trades data: jsongz, json
+dataformat_trades: jsongz
 
 # ==================== Backtesting Configuration ====================
 backtest:
+  # Default timeframe for backtesting
   timeframe: 5m
-  timerange: 20240101-20241231
-  max_open_trades: 5
-  position_stacking: false
-  enable_position_stacking: false
+
+  # Default time range (format: YYYYMMDD-YYYYMMDD)
+  timerange: "20240101-20241231"
+
+  # Maximum concurrent open trades during backtest
+  max_open_trades: 3
+
+  # Fee rate (e.g., 0.001 = 0.1%)
   fee: 0.001
+
+  # Enable position stacking (multiple trades per pair)
+  position_stacking: false
 
 # ==================== Hyperopt Configuration ====================
 hyperopt:
+  # Number of optimization epochs
   epochs: 100
-  spaces: all  # buy, sell, roi, stoploss, trailing
-  loss_function: SharpeHyperOptLoss
-  hyperopt_jobs: -1
-  target_trades: 30
-  min_trades: 1
+
+  # Parameter spaces to optimize: all, buy, sell, roi, stoploss, trailing
+  spaces: all
+
+  # Loss function: default, sharpe, winratio, profit_drawdown
+  loss_function: default
+
+  # Minimum trades required for a valid result
+  min_trades: 10
+
+  # Number of parallel jobs (-1 = all CPUs)
+  jobs: -1
+
+  # Random seed for reproducibility (null = random)
+  random_state: null
 
 # ==================== Database Configuration ====================
 # SQLite (default)
 db_url: sqlite:///user_data/tradesv3.sqlite
 
-# PostgreSQL (optional)
+# PostgreSQL
 # db_url: postgresql://user:password@localhost:5432/bullseye
 
-# MySQL (optional)
+# MySQL
 # db_url: mysql://user:password@localhost:3306/bullseye
 
 # ==================== Telegram Configuration ====================
@@ -166,6 +242,17 @@ telegram:
     show_candle: off
     strategy_msg: on
 
+# ==================== Webhook Configuration ====================
+webhook:
+  enabled: false
+  url: ""
+  format: json
+  retry_count: 3
+  timeout: 10
+  # Custom headers
+  headers: {}
+    # Authorization: "Bearer YOUR_TOKEN"
+
 # ==================== API Server Configuration ====================
 api_server:
   enabled: false
@@ -173,19 +260,34 @@ api_server:
   listen_port: 8080
   verbosity: error
   enable_openapi: true
-  jwt_secret_key: ""
+  jwt_secret_key: "change_me_to_a_random_string"
   ws_token: ""
   CORS_origins: []
   username: ""
   password: ""
 
 # ==================== Logging Configuration ====================
+# Log file path (null = no file logging)
 logfile: user_data/logs/bullseye.log
+
+# Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
 log_level: INFO
 
-# ==================== Additional Settings ====================
+# ==================== Internal Settings ====================
 internals:
+  # Throttle interval in seconds between strategy iterations
   process_throttle_secs: 5
 
 # ==================== Protections ====================
+# Protection handlers to limit risk
 protections: []
+  # - method: StoplossGuard
+  #   lookback_period: 60
+  #   trade_limit: 2
+  #   stop_duration_candle: 1
+  # - method: CooldownPeriod
+  #   stop_duration_candle: 2
+  # - method: MaxDrawdown
+  #   trade_limit: 20
+  #   stop_duration_candle: 2
+  #   max_allowed_drawdown: 0.15

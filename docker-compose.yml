@@ -1,11 +1,42 @@
 # Bullseye Quantitative Trading Framework - Docker Compose
-# Version 3.8 for Docker Compose compatibility
+# Compatible with Freqtrade command style
+#
+# Usage examples:
+#   docker-compose run --rm bullseye download-data --exchange okx --pairs BTC/USDT --timeframes 30m
+#   docker-compose run --rm bullseye backtesting --strategy MyStrategy
+#   docker-compose run --rm bullseye hyperopt --strategy MyStrategy --hyperopt-loss SharpeHyperOptLoss --epochs 1000
 
 version: "3.8"
 
 services:
-  # Main Bullseye trading service
+  # Main bullseye CLI service (one-shot commands)
+  # All commands are passed through to bullseye CLI
   bullseye:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bullseye:latest
+    container_name: bullseye_cli
+    restart: "no"
+
+    environment:
+      - PYTHONUNBUFFERED=1
+      - BULLSEYE_CONFIG=/app/user_data/config.yaml
+      - BULLSEYE_USER_DATA=/app/user_data
+      - TZ=Asia/Shanghai
+
+    volumes:
+      - ./user_data:/app/user_data
+
+    # Default command - overridden by docker-compose run arguments
+    # docker-compose run --rm bullseye <command> [args...]
+    command: []
+
+    networks:
+      - bullseye_network
+
+  # Trading service (long-running)
+  trading:
     build:
       context: .
       dockerfile: Dockerfile
@@ -13,44 +44,24 @@ services:
     container_name: bullseye_trading
     restart: unless-stopped
 
-    # Environment variables
     environment:
       - PYTHONUNBUFFERED=1
-      - BULLSEYE_CONFIG=/app/config.yaml
+      - BULLSEYE_CONFIG=/app/user_data/config.yaml
       - BULLSEYE_USER_DATA=/app/user_data
       - TZ=Asia/Shanghai
 
-    # Mount volumes for persistence and configuration
     volumes:
-      # Configuration file
-      - ./config.yaml:/app/config.yaml:ro
-
-      # User data directory (strategies, data, logs, etc.)
       - ./user_data:/app/user_data
 
-    # Port mappings (使用 9876 端口替代 8080)
     ports:
       - "9876:9876"  # API server
       - "8765:8765"  # WebSocket
 
-    # Command override for different modes
-    # Default: dry-run trading
     command: ["trade", "--dry"]
 
-    # Network
     networks:
       - bullseye_network
 
 networks:
   bullseye_network:
     driver: bridge
-
-volumes:
-  postgres_data:
-    driver: local
-  redis_data:
-    driver: local
-  grafana_data:
-    driver: local
-  prometheus_data:
-    driver: local

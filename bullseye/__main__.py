@@ -2,6 +2,7 @@
 Bullseye - CLI Entry Point
 
 Command-line interface for the Bullseye quantitative trading framework.
+Compatible with Freqtrade command style.
 """
 import sys
 import logging
@@ -11,6 +12,7 @@ from typing import Optional
 import click
 from rich.console import Console
 from rich.table import Table
+from rich.panel import Panel
 
 try:
     from . import __version__
@@ -163,9 +165,11 @@ def trade(ctx, dry: bool, live: bool, strategy: Optional[str], config: Optional[
         sys.exit(1)
 
 
+# ==================== Backtesting Command ====================
+
 @cli.command()
 @click.option('--strategy', '-s', type=str, required=True, help='Strategy name')
-@click.option('--timeframe', '-tf', type=str, default='5m', help='Timeframe')
+@click.option('--timeframe', '-tf', type=str, help='Timeframe (e.g. 5m, 1h, 30m)')
 @click.option('--timerange', type=str, help='Time range (e.g., 20240101-20241231)')
 @click.option('--config', '-c', type=str, help='Configuration file')
 @click.option('--stake-amount', type=float, help='Stake amount per trade')
@@ -188,7 +192,8 @@ def backtesting(ctx, strategy: str, timeframe: str, timerange: Optional[str],
     """
     console.print(f"[bold green]Running backtest...[/bold green]")
     console.print(f"[blue]Strategy:[/blue] {strategy}")
-    console.print(f"[blue]Timeframe:[/blue] {timeframe}")
+    if timeframe:
+        console.print(f"[blue]Timeframe:[/blue] {timeframe}")
     if timerange:
         console.print(f"[blue]Time range:[/blue] {timerange}")
     console.print(f"[blue]Initial balance:[/blue] {initial_balance}")
@@ -257,17 +262,65 @@ def backtesting(ctx, strategy: str, timeframe: str, timerange: Optional[str],
         sys.exit(1)
 
 
-# Import download_data from commands
-from .commands.data_commands import download_data as download_data_cmd
+# ==================== Download Data Command ====================
 
+@cli.command()
+@click.option('--exchange', '-e', type=str, help='Exchange name')
+@click.option('--pairs', '-p', type=str, help='Trading pairs (comma-separated or space-separated)')
+@click.option('--timeframes', '-t', type=str, help='Timeframes (comma-separated)')
+@click.option('--days', '-d', type=int, default=30, help='Number of days to download')
+@click.option('--timerange', type=str, help='Time range (e.g., 20240101-20241231)')
+@click.option('--data-format', type=str, default='json', help='Data format (json/feather/parquet)')
+@click.option('--prepend', is_flag=True, help='Prepend to existing data')
+@click.option('--erase', is_flag=True, help='Erase existing data')
+@click.option('--config', '-c', type=str, help='Configuration file')
+@click.option('--dry-run', is_flag=True, help='Show what would be downloaded without downloading')
+@click.pass_context
+def download_data_cmd(ctx, exchange: Optional[str], pairs: Optional[str],
+                      timeframes: Optional[str], days: int, timerange: Optional[str],
+                      data_format: str, prepend: bool, erase: bool,
+                      config: Optional[str], dry_run: bool):
+    """
+    Download historical market data
+
+    Downloads OHLCV data from the exchange for backtesting and analysis.
+
+    Examples:
+        bullseye download-data --exchange okx --pairs BTC/USDT,ETH/USDT
+        bullseye download-data --exchange okx --pairs BTC/USDT ETH/USDT --timeframes 30m
+        bullseye download-data --days 30 --timeframes 5m,1h
+        bullseye download-data --timerange 20240101-20241231
+        bullseye download-data --exchange okx --dry-run
+    """
+    # Import and call the actual implementation function (not the click command)
+    from .commands.data_commands import _download_data_impl
+    _download_data_impl(
+        exchange=exchange,
+        pairs=pairs,
+        timeframes=timeframes,
+        days=days,
+        timerange=timerange,
+        data_format=data_format,
+        prepend=prepend,
+        erase=erase,
+        config=config,
+        dry_run=dry_run,
+    )
+
+
+# ==================== Hyperopt Command ====================
 
 @cli.command()
 @click.option('--strategy', '-s', type=str, required=True, help='Strategy name')
 @click.option('--epochs', type=int, default=100, help='Number of optimization epochs')
-@click.option('--spaces', type=str, default='all', help='Optimization spaces')
-@click.option('--loss', type=str, default='default', help='Loss function (default, sharpe, winratio, profit_drawdown)')
+@click.option('--spaces', type=str, default='all', help='Optimization spaces (buy, sell, roi, stoploss, trailing, all)')
+@click.option('--hyperopt-loss', type=str, default='DefaultHyperOptLoss',
+              help='Loss function (DefaultHyperOptLoss, SharpeHyperOptLoss, SortinoHyperOptLoss, '
+                   'CalmarHyperOptLoss, ProfitDrawDownHyperOptLoss, OnlyProfitHyperOptLoss, '
+                   'OnlyProfitHyperOptLossDaily, MaxDrawDownHyperOptLoss, ExpectedDrawdownHyperOptLoss, '
+                   'BankruptcyHyperOptLoss)')
 @click.option('--min-trades', type=int, default=10, help='Minimum trades required')
-@click.option('--timeframe', '-tf', type=str, default='5m', help='Timeframe')
+@click.option('--timeframe', '-tf', type=str, help='Timeframe (e.g. 5m, 1h, 30m)')
 @click.option('--timerange', type=str, help='Time range (e.g., 20240101-20241231)')
 @click.option('--config', '-c', type=str, help='Configuration file')
 @click.option('--stake-amount', type=float, help='Stake amount per trade')
@@ -277,24 +330,26 @@ from .commands.data_commands import download_data as download_data_cmd
 @click.option('--export', type=str, help='Export results to JSON file')
 @click.option('--random-state', type=int, help='Random seed for reproducibility')
 @click.pass_context
-def hyperopt(ctx, strategy: str, epochs: int, spaces: str, loss: str,
-             min_trades: int, timeframe: str, timerange: Optional[str],
-             config: Optional[str], stake_amount: Optional[float],
-             initial_balance: float, max_open_trades: Optional[int],
-             fee: float, export: Optional[str], random_state: Optional[int]):
+def hyperopt(ctx, strategy: str, epochs: int, spaces: str,
+             hyperopt_loss: str, min_trades: int, timeframe: str,
+             timerange: Optional[str], config: Optional[str],
+             stake_amount: Optional[float], initial_balance: float,
+             max_open_trades: Optional[int], fee: float,
+             export: Optional[str], random_state: Optional[int]):
     """
     Run hyperparameter optimization
 
     Examples:
         bullseye hyperopt --strategy MyStrategy --epochs 100
-        bullseye hyperopt --strategy MyStrategy --loss sharpe --epochs 200
+        bullseye hyperopt --strategy MyStrategy --hyperopt-loss SharpeHyperOptLoss --epochs 200
+        bullseye hyperopt --strategy MyStrategy --spaces buy roi --epochs 500
         bullseye hyperopt --strategy MyStrategy --min-trades 20 --timerange 20240101-20241231
     """
     console.print(f"[bold green]Running hyperopt...[/bold green]")
     console.print(f"[blue]Strategy:[/blue] {strategy}")
     console.print(f"[blue]Epochs:[/blue] {epochs}")
     console.print(f"[blue]Spaces:[/blue] {spaces}")
-    console.print(f"[blue]Loss function:[/blue] {loss}")
+    console.print(f"[blue]Loss function:[/blue] {hyperopt_loss}")
     console.print(f"[blue]Min trades:[/blue] {min_trades}")
 
     config_path = config or ctx.obj.get('config')
@@ -306,6 +361,11 @@ def hyperopt(ctx, strategy: str, epochs: int, spaces: str, loss: str,
 
     from .optimize import HyperoptEngine
 
+    # Convert loss function name to internal format
+    loss_name = hyperopt_loss.replace('HyperOptLoss', '').replace('HyperoptLoss', '').lower()
+    if loss_name == 'defaulthyperopt' or loss_name == 'default':
+        loss_name = 'default'
+
     engine = HyperoptEngine(config=config_obj)
 
     try:
@@ -315,7 +375,7 @@ def hyperopt(ctx, strategy: str, epochs: int, spaces: str, loss: str,
             timerange=timerange,
             epochs=epochs,
             spaces=spaces,
-            loss_function=loss,
+            loss_function=loss_name,
             min_trades=min_trades,
             stake_amount=stake_amount,
             max_open_trades=max_open_trades,
@@ -367,6 +427,149 @@ def hyperopt(ctx, strategy: str, epochs: int, spaces: str, loss: str,
         console.print(f"\n[red]Hyperopt error: {e}[/red]")
         logger.exception("Hyperopt error")
         sys.exit(1)
+
+
+# ==================== Hyperopt List Command ====================
+
+@cli.command()
+@click.option('--best', is_flag=True, help='Show only best results')
+@click.option('--profitable', is_flag=True, help='Show only profitable results')
+@click.option('--export', type=str, help='Export results to file')
+def hyperopt_list(best: bool, profitable: bool, export: Optional[str]):
+    """
+    List hyperopt results
+
+    Examples:
+        bullseye hyperopt-list
+        bullseye hyperopt-list --best
+        bullseye hyperopt-list --profitable
+    """
+    console.print("[bold green]Hyperopt Results[/bold green]")
+
+    # Look for hyperopt results in user_data/hyperopt
+    from pathlib import Path
+    hyperopt_dir = Path("user_data/hyperopt")
+
+    if not hyperopt_dir.exists():
+        console.print("[yellow]No hyperopt results found.[/yellow]")
+        return
+
+    result_files = sorted(hyperopt_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+    if not result_files:
+        console.print("[yellow]No hyperopt results found.[/yellow]")
+        return
+
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("Date", style="cyan")
+    table.add_column("Strategy", style="green")
+    table.add_column("Loss", style="yellow")
+    table.add_column("Trades", style="blue")
+    table.add_column("Profit %", style="green")
+
+    import json
+    for result_file in result_files[:20]:  # Show last 20
+        try:
+            with open(result_file) as f:
+                data = json.load(f)
+
+            date = datetime.fromtimestamp(result_file.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            strategy = data.get('strategy', 'Unknown')
+            loss = data.get('best_loss', 0)
+            trades = data.get('best_metrics', {}).get('total_trades', 0)
+            profit = data.get('best_metrics', {}).get('total_profit_pct', 0)
+
+            if best and profit <= 0:
+                continue
+            if profitable and profit <= 0:
+                continue
+
+            table.add_row(
+                date,
+                strategy,
+                f"{loss:.4f}",
+                str(trades),
+                f"{profit:.2f}%"
+            )
+        except Exception:
+            continue
+
+    console.print(table)
+
+
+# ==================== Hyperopt Show Command ====================
+
+@cli.command()
+@click.option('--index', type=int, help='Result index to show')
+@click.option('--file', type=str, help='Result file to show')
+def hyperopt_show(index: Optional[int], file: Optional[str]):
+    """
+    Show hyperopt result details
+
+    Examples:
+        bullseye hyperopt-show --index 1
+        bullseye hyperopt-show --file user_data/hyperopt/result_xxx.json
+    """
+    from pathlib import Path
+    import json
+
+    if file:
+        result_file = Path(file)
+    else:
+        hyperopt_dir = Path("user_data/hyperopt")
+        if not hyperopt_dir.exists():
+            console.print("[yellow]No hyperopt results found.[/yellow]")
+            return
+
+        result_files = sorted(hyperopt_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not result_files:
+            console.print("[yellow]No hyperopt results found.[/yellow]")
+            return
+
+        idx = index - 1 if index else 0
+        if idx < 0 or idx >= len(result_files):
+            console.print(f"[red]Invalid index. Found {len(result_files)} results.[/red]")
+            return
+        result_file = result_files[idx]
+
+    try:
+        with open(result_file) as f:
+            data = json.load(f)
+
+        console.print(Panel(
+            f"[bold cyan]Hyperopt Result: {result_file.name}[/bold cyan]",
+            expand=False,
+        ))
+
+        console.print(f"[blue]Strategy:[/blue] {data.get('strategy', 'Unknown')}")
+        console.print(f"[blue]Loss:[/blue] {data.get('best_loss', 0):.6f}")
+        console.print(f"[blue]Epochs:[/blue] {data.get('epochs', 0)}")
+
+        best = data.get('best_params', {})
+        if best:
+            console.print("\n[bold]Best Parameters:[/bold]")
+            param_table = Table(show_header=True, header_style="bold magenta")
+            param_table.add_column("Parameter", style="cyan")
+            param_table.add_column("Value", style="green")
+            for param, value in sorted(best.items()):
+                param_table.add_row(str(param), str(value))
+            console.print(param_table)
+
+        metrics = data.get('best_metrics', {})
+        if metrics:
+            console.print("\n[bold]Metrics:[/bold]")
+            metrics_table = Table(show_header=True, header_style="bold magenta")
+            metrics_table.add_column("Metric", style="cyan")
+            metrics_table.add_column("Value", style="green")
+            for key, value in sorted(metrics.items()):
+                if isinstance(value, float):
+                    metrics_table.add_row(key, f"{value:.4f}")
+                else:
+                    metrics_table.add_row(key, str(value))
+            console.print(metrics_table)
+
+    except Exception as e:
+        console.print(f"[red]Error reading result: {e}[/red]")
 
 
 # ==================== Strategy Commands ====================
@@ -660,11 +863,10 @@ def info():
     console.print(table)
 
 
-# Register new commands
+# Register commands from commands module
 cli.add_command(create_userdir)
 cli.add_command(new_config)
 cli.add_command(show_config)
-cli.add_command(download_data_cmd)
 cli.add_command(list_data)
 cli.add_command(convert_data)
 cli.add_command(convert_trade_data)
