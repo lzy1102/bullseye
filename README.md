@@ -6,10 +6,10 @@ A quantitative trading framework compatible with [Freqtrade](https://github.com/
 
 - **100% Freqtrade Strategy Compatible** - Use your existing Freqtrade strategies without modification
 - **Multi-Market Support**:
-  - Cryptocurrency (via CCXT): Binance, OKX, Bybit, Gate.io, and more
-  - Chinese Stocks: XTP, TORA, OST, EMT
-  - Futures: CTP (SimNow), MiniCTP, FEMAS
-  - International: IB (Interactive Brokers), TAP, DA
+  - Cryptocurrency (via CCXT): Binance, OKX, Bybit, Gate.io, and 100+ more
+  - Chinese Stocks (via miniQMT/xtquant): A-share market (SSE, SZSE, BSE)
+  - Futures (via CTP/openctp-ctp): All 6 Chinese futures exchanges (SHFE, DCE, CZCE, CFFEX, INE, GFEX)
+  - Dry Run / Paper Trading: Local simulation for strategy testing
 - **Unified Interface** - Same strategy can trade across different markets
 - **Event-Driven Architecture** - High-performance event engine inspired by VeighNa (vnpy)
 - **Backtesting Engine** - Iterative backtesting with stoploss, trailing stop, ROI, and custom exit support
@@ -176,21 +176,23 @@ exchange:
   key: your_api_key
   secret: your_api_secret
 
-# For stock (China)
+# For stock (China A-share via miniQMT)
 stock:
-  gateway: xtp
-  userid: your_userid
-  password: your_password
-  client_id: 1
+  gateway: miniqmt
+  qmt_path: "D:\\QMT\\userdata_mini"   # miniQMT client path
+  session_id: 123456
+  account_id: "your_account_id"
 
-# For futures (China)
+# For futures (China via CTP / SimNow)
 future:
   gateway: ctp
-  userid: your_userid
+  user_id: your_userid
   password: your_password
-  brokerid: "9999"
+  broker_id: "9999"                     # SimNow: 9999
   td_address: "tcp://180.168.146.187:10130"
   md_address: "tcp://180.168.146.187:10131"
+  auth_code: ""                         # optional, for real trading
+  app_id: ""                            # optional
 ```
 
 ### 3. Download Data
@@ -247,7 +249,39 @@ Available loss functions:
 ### 6. Run Live Trading
 
 ```bash
+# Crypto (dry run)
 bullseye trade --strategy MyStrategy --config config.yaml --dry
+
+# A-share stocks (requires miniQMT client running on Windows)
+bullseye trade --strategy MyStockStrategy --config config_stock.yaml --live
+
+# Futures (via CTP / SimNow simulation)
+bullseye trade --strategy MyFuturesStrategy --config config_futures.yaml --live
+```
+
+## Gateway Setup
+
+### Cryptocurrency (CCXT)
+```bash
+pip install ccxt
+```
+Supports 100+ exchanges. No additional setup required.
+
+### A-share Stocks (miniQMT)
+```bash
+pip install xtquant
+```
+Requires [miniQMT client](https://www.xuntou.net) running on Windows (or [xqshare](https://github.com/jasonhu/xqshare) remote on Linux/Mac).
+
+### Futures (CTP)
+```bash
+pip install openctp-ctp==6.7.11.*
+```
+Register free SimNow account at [simnow.com.cn](https://www.simnow.com.cn) for testing. Real trading requires a futures broker account.
+
+All gateways can also be installed together:
+```bash
+pip install -e ".[stock,future]"
 ```
 
 ## CLI Commands
@@ -296,12 +330,12 @@ bullseye/
 │   ├── engine.py
 │   └── object/        # Data objects (Order, Trade, Tick, Bar, Kline, Position, Account)
 ├── gateway/          # Trading gateways
-│   ├── base.py
-│   ├── crypto/        # CCXT gateways
-│   ├── stock/         # Stock gateways (XTP, TORA, OST, EMT)
-│   ├── future/        # Future gateways (CTP, MiniCTP, FEMAS)
-│   ├── international/ # International gateways (IB, TAP, DA)
-│   └── dryrun/        # Dry run (paper trading) gateway
+│   ├── base.py         # Abstract gateway interface
+│   ├── crypto/         # CCXT gateway (Binance, OKX, Bybit, etc.)
+│   ├── stock/          # miniQMT (A-share) + XTP (中泰, stub)
+│   ├── future/         # CTP gateway (all 6 Chinese futures exchanges)
+│   ├── international/  # placeholder
+│   └── dryrun/         # Dry run (paper trading) gateway
 ├── strategy/         # Strategy interface (Freqtrade compatible)
 │   ├── interface.py   # IStrategy v3 interface
 │   └── template.py    # Strategy templates
@@ -385,8 +419,8 @@ Current test status: **141 passed, 13 skipped** (skipped tests require external 
 | Backtesting | ✅ | ✅ |
 | Hyperopt | ✅ | ✅ |
 | Crypto Trading | ✅ (CCXT) | ✅ (CCXT) |
-| Stock Trading | ✅ | ❌ |
-| Futures Trading | ✅ | ❌ |
+| Stock Trading | ✅ (miniQMT) | ❌ |
+| Futures Trading | ✅ (CTP, 6 exchanges) | ❌ |
 | Event-Driven | ✅ | ❌ |
 | Structured Exceptions | ✅ | ❌ |
 

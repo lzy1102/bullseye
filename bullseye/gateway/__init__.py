@@ -15,7 +15,7 @@ from .base import BaseGateway, GatewayType
 from .crypto import CcxtGateway
 
 # Stock gateways
-from .stock import XtpGateway
+from .stock import MiniQmtGateway, XtpGateway
 
 # Futures gateways
 from .future import CtpGateway
@@ -24,6 +24,7 @@ __all__ = [
     "BaseGateway",
     "GatewayType",
     "CcxtGateway",
+    "MiniQmtGateway",
     "XtpGateway",
     "CtpGateway",
 ]

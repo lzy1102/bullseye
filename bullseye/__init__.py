@@ -18,7 +18,7 @@ __license__ = "MIT"
 
 from .trader import MainEngine, EventEngine, Event, EventType
 from .strategy import IStrategy
-from .gateway import BaseGateway, CcxtGateway
+from .gateway import BaseGateway, CcxtGateway, CtpGateway, MiniQmtGateway
 from .persistence import Base, Trade, Order, PairLock
 
 __all__ = [
@@ -34,6 +34,8 @@ __all__ = [
     # Gateway
     "BaseGateway",
     "CcxtGateway",
+    "CtpGateway",
+    "MiniQmtGateway",
     # Persistence
     "Base",
     "Trade",
