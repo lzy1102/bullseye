@@ -9,8 +9,9 @@ Supports various Chinese stock broker protocols:
 """
 
 from .xtp_gateway import XtpGateway
+from .miniqmt_gateway import MiniQmtGateway
 
-__all__ = ["XtpGateway"]
+__all__ = ["XtpGateway", "MiniQmtGateway"]
 
 # Additional gateways can be imported when implemented:
 # from .tora_gateway import ToraGateway
