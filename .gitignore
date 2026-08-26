@@ -152,3 +152,9 @@ logs/
 *.swp
 tmp/
 temp/
+
+# Ad-hoc build archives and one-off command outputs (repo root)
+/*.tar.gz
+/server_status.txt
+/status_result.txt
+/download_output.txt
