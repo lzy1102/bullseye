@@ -181,7 +181,7 @@ def list_markets(exchange: Optional[str], quote: Optional[str],
                 from ..configuration import Config
                 config_obj = Config(config or "config.yaml")
                 exchange = config_obj.get('exchange.name', 'binance')
-            except:
+            except Exception:
                 exchange = 'binance'
         
         console.print(f"[green]Fetching markets from {exchange}...[/green]\n")
@@ -273,7 +273,7 @@ def list_pairs(exchange: Optional[str], quote: Optional[str],
                 from ..configuration import Config
                 config_obj = Config(config or "config.yaml")
                 exchange = config_obj.get('exchange.name', 'binance')
-            except:
+            except Exception:
                 exchange = 'binance'
         
         console.print(f"[green]Fetching pairs from {exchange}...[/green]\n")

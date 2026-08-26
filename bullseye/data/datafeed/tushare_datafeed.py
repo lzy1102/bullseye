@@ -137,10 +137,10 @@ class TuShareDatafeed(BaseDatafeed):
 
             logger.info("TuShare initialized successfully")
 
-        except ImportError:
+        except ImportError as e:
             raise ImportError(
                 "TuShare is not installed. Please run: pip install tushare"
-            )
+            ) from e
 
     @property
     def ts(self):

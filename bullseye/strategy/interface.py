@@ -4,12 +4,17 @@ Strategy Interface - Freqtrade IStrategy v3 Compatible Interface
 This module provides a 100% compatible implementation of Freqtrade's IStrategy interface.
 All Freqtrade strategies can be used directly without any modifications.
 """
-from typing import Dict, List, Optional, Tuple, Union, Callable, Any
+from typing import Dict, List, Optional, Tuple, Union, Callable, Any, TYPE_CHECKING
 from pandas import DataFrame
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 from enum import Enum
 import logging
+
+if TYPE_CHECKING:
+    from bullseye.data.dataprovider import DataProvider
+    from bullseye.wallets.wallets import Wallets
+    from bullseye.persistence.models import Order, Trade
 
 logger = logging.getLogger(__name__)
 

@@ -3,6 +3,7 @@ Telegram Integration for Bullseye
 
 Provides Telegram bot functionality for notifications and control.
 """
+import asyncio
 import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime
@@ -81,15 +82,31 @@ class TelegramBot:
             return False
         
         try:
-            self.bot.send_message(
+            coroutine = self.bot.send_message(
                 chat_id=self.config.chat_id,
                 text=message,
                 parse_mode=parse_mode
             )
-            return True
+            return bool(self._run_coroutine(coroutine))
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
             return False
+
+    def _run_coroutine(self, coroutine) -> Any:
+        """
+        Execute a python-telegram-bot coroutine from synchronous code.
+
+        Handles both environments:
+        - No running event loop (normal sync usage): block via asyncio.run()
+        - Running event loop (e.g. inside FastAPI): schedule as a task
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coroutine)
+
+        task = asyncio.ensure_future(coroutine)
+        return task
     
     def notify_entry(self, trade: Dict[str, Any]) -> bool:
         """

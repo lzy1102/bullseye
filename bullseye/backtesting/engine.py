@@ -29,6 +29,7 @@ from bullseye.exceptions import (
 from bullseye.gateway.base import BaseGateway
 from bullseye.order.position_manager import LocalTrade, PositionManager, MarketType
 from bullseye.order.order_executor import OrderExecutor
+from bullseye.order.settlement import SettlementType
 from bullseye.strategy.interface import IStrategy
 from bullseye.wallets.wallets import Wallets
 
@@ -437,7 +438,6 @@ class BacktestEngine:
 
         # Balance tracking for equity curve
         startup_candle_count = getattr(strategy, 'startup_candle_count', 30)
-        timeframe_minutes = self._timeframe_to_minutes(timeframe)
         startup_bars = startup_candle_count
 
         logger.info(f"Backtest: {len(sorted_dates)} candles, {len(pairlist)} pairs")
@@ -632,9 +632,12 @@ class BacktestEngine:
                     trade.initial_stop_loss = trade.stop_loss
 
                 open_trades[pair] = trade
-                wallets.deduct_amount(self._config.stake_currency, actual_stake + fee)
+                # Fees (open + close) are settled once at trade close via calc_profit;
+                # deducting fee_open here as well would double-charge it.
+                wallets.deduct_amount(self._config.stake_currency, actual_stake)
 
                 logger.debug(f"Entry: {pair} @ {current_rate}, stake={actual_stake}")
+                return
 
             # Check for short entry
             if getattr(strategy, 'can_short', False):
@@ -695,7 +698,7 @@ class BacktestEngine:
                         trade.initial_stop_loss = trade.stop_loss
 
                     open_trades[pair] = trade
-                    wallets.deduct_amount(self._config.stake_currency, actual_stake + fee)
+                    wallets.deduct_amount(self._config.stake_currency, actual_stake)
 
         except Exception as e:
             logger.debug(f"Error checking entry for {pair}: {e}")
@@ -716,6 +719,21 @@ class BacktestEngine:
         """Check exit conditions for an open trade."""
         # Update rate tracking
         trade.update_rate(current_rate)
+
+        # 0. Enforce T+1/T+N settlement: the position cannot be sold before
+        # its settlement date (compared against simulated time, NOT wall clock)
+        rule = trade.settlement_rule
+        settlement_date = trade.settlement_date
+        if (
+            rule is not None
+            and rule.settlement_type != SettlementType.T0
+            and settlement_date is not None
+            and current_date < settlement_date
+        ):
+            logger.debug(
+                f"Exit blocked for {trade.pair}: T+1 settlement until {settlement_date}"
+            )
+            return
 
         # 1. Check stoploss (use low for long, high for short)
         stoploss_hit = False

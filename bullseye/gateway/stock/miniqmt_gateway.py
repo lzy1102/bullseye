@@ -19,6 +19,8 @@ Architecture:
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import pandas as pd
+
 from ...trader.eventengine import EventEngine, EventType
 from ...trader.object import (
     AccountData,

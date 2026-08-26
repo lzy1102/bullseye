@@ -140,7 +140,6 @@ class ExitLogic:
         """
         # Check if pair is locked
         if self.pair_lock.is_pair_locked(pair, current_time):
-            lock_info = self.pair_lock.get_lock_info(pair)
             return ExitDecision(
                 should_exit=True,
                 exit_reason='pair_locked',

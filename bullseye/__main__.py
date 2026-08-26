@@ -24,15 +24,13 @@ from .commands import (
     # Data commands
     download_data, list_data, convert_data, convert_trade_data, trades_to_ohlcv,
     # List commands
-    list_markets, list_pairs, list_hyperoptloss, list_timeframes, list_exchanges,
+    list_markets, list_pairs, list_hyperoptloss,
     # Backtest commands
     backtesting_show, backtesting_analysis,
     # Trade commands
     show_trades, test_pairlist, convert_db,
     # Plot commands
     plot_dataframe, plot_profit,
-    # Hyperopt commands
-    hyperopt_list, hyperopt_show, strategy_updater,
     # Webserver commands
     webserver,
 )
@@ -135,7 +133,6 @@ def trade(ctx, dry: bool, live: bool, strategy: Optional[str], config: Optional[
             # Try loading from user_data/strategies
             strategy_path = Path(config_obj.strategy_path)
             if strategy_path.exists():
-                import sys
                 sys.path.insert(0, str(strategy_path))
 
             # Try direct import

@@ -201,8 +201,8 @@ def lookahead_analysis(strategy: str, pair: str, timeframe: str, timerange: Opti
             sys.exit(1)
         
         # Create strategy instance
-        strategy_instance = strategy_class()
-        
+        strategy_class()
+
         # Load data (placeholder - would need actual data loading)
         console.print("[yellow]Note: This requires historical data.[/yellow]")
         console.print("[dim]Run 'bullseye download-data' first to get the data.[/dim]\n")

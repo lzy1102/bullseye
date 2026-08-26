@@ -6,6 +6,7 @@ Commands for downloading, listing, and converting market data.
 import os
 import sys
 import json
+import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, List
@@ -16,6 +17,7 @@ from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 # Supported data formats
 DATA_FORMATS = ['json', 'feather', 'parquet']
@@ -65,7 +67,7 @@ def _download_data_impl(exchange: Optional[str], pairs: Optional[str], timeframe
         exchange = exchange or config_obj.get('exchange.name', 'binance')
         pairs_list = pairs.split(',') if pairs else config_obj.get('pairlist', ['BTC/USDT', 'ETH/USDT'])
         timeframes_list = timeframes.split(',') if timeframes else ['5m']
-    except:
+    except Exception:
         exchange = exchange or 'binance'
         pairs_list = pairs.split(',') if pairs else ['BTC/USDT', 'ETH/USDT']
         timeframes_list = timeframes.split(',') if timeframes else ['5m']
@@ -107,7 +109,7 @@ def _download_data_impl(exchange: Optional[str], pairs: Optional[str], timeframe
     data_dir.mkdir(parents=True, exist_ok=True)
 
     import pandas as pd
-    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn, TimeRemainingColumn
+    from rich.progress import BarColumn, TimeElapsedColumn, TimeRemainingColumn
 
     total_pairs = len(pairs_list) * len(timeframes_list)
     pair_idx = 0
@@ -270,7 +272,7 @@ def list_data(exchange: Optional[str], data_format: Optional[str], print_json: b
         from ..configuration import Config
         config_obj = Config(config or "config.yaml")
         exchange = exchange or config_obj.get('exchange.name', 'binance')
-    except:
+    except Exception:
         exchange = exchange or 'binance'
     
     data_dir = get_data_dir(exchange)
@@ -371,7 +373,7 @@ def convert_data(input_format: str, output_format: str, exchange: Optional[str],
         from ..configuration import Config
         config_obj = Config(config or "config.yaml")
         exchange = exchange or config_obj.get('exchange.name', 'binance')
-    except:
+    except Exception:
         exchange = exchange or 'binance'
     
     data_dir = get_data_dir(exchange)

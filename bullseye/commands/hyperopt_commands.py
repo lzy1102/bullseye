@@ -44,7 +44,7 @@ def list_hyperopt_results(best_only: bool = False, profitable_only: bool = False
                     'filepath': filepath,
                     'result': result
                 })
-        except:
+        except (OSError, ValueError):
             pass
     
     # Sort by total_profit (descending)

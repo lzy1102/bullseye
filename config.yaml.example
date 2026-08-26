@@ -40,6 +40,10 @@ market_type: auto
 # T+0: Can sell immediately (crypto, US stocks, HK stocks, futures)
 # T+1: Can sell next trading day (Chinese A-shares)
 # T+2: Can sell in 2 trading days (some markets)
+#
+# Note: With `exchange-calendars` installed, T+1 settlement dates for
+# A-shares skip Chinese public holidays (e.g. buying before National Day
+# settles after the holiday). Without it, only weekends are skipped.
 settlement:
   # Mode: "auto" (auto-detect) or "manual"
   # Auto-detection uses pair format to determine settlement type:
@@ -102,7 +106,7 @@ stock:
   td_ip: "120.27.164.138"
   td_port: 6001
 
-  # Datafeed for historical data: tushare, akshare
+  # Datafeed for historical data: tushare, akshare, baostock
   datafeed: tushare
   tushare_token: ""
 

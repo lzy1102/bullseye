@@ -7,7 +7,7 @@ from sqlalchemy import (
     Column, Integer, String, Float, DateTime, Boolean,
     Numeric, Enum as SQLEnum, Text, Index
 )
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from datetime import datetime, timezone
 
 Base = declarative_base()
@@ -149,7 +149,7 @@ class PairLock(Base):
         return f"PairLock(pair={self.pair}, until={self.lock_end_time})"
 
 
-class Index(Base):
+class IndexRecord(Base):
     """
     Index record table
 
@@ -165,7 +165,7 @@ class Index(Base):
     download_date = Column(DateTime, nullable=False, default=datetime.now(timezone.utc))
 
     def __repr__(self):
-        return f"Index(pair={self.pair}, timeframe={self.timeframe}, date={self.date})"
+        return f"IndexRecord(pair={self.pair}, timeframe={self.timeframe}, date={self.date})"
 
 
 class BacktestResult(Base):

@@ -4,7 +4,7 @@ Test RPC modules
 import pytest
 import sys
 from pathlib import Path
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import Mock, MagicMock, AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -42,22 +42,35 @@ class TestTelegramRPC:
 
         assert bot._initialized is False
 
-    def test_telegram_bot_send_message(self):
-        """Test TelegramBot message sending (mock)."""
+    def _make_bot(self) -> TelegramBot:
+        """Create a TelegramBot with a mocked async telegram client."""
         config = TelegramConfig(
             enabled=True,
             token='test_token',
             chat_id='test_chat_id',
-            notification_settings={'entry': 'on', 'exit': 'on'}
         )
         bot = TelegramBot(config)
+        bot.bot = AsyncMock()
+        bot.bot.send_message.return_value = True
+        return bot
+
+    def test_telegram_bot_send_message(self):
+        """Test TelegramBot message sending (mock)."""
+        bot = self._make_bot()
 
         assert bot.send_message('Test message') is True
+        bot.bot.send_message.assert_awaited_once()
+
+    def test_telegram_bot_send_message_failure(self):
+        """Test TelegramBot message sending failure (mock)."""
+        bot = self._make_bot()
+        bot.bot.send_message.side_effect = Exception("network error")
+
+        assert bot.send_message('Test message') is False
 
     def test_telegram_bot_notify_entry(self):
         """Test TelegramBot entry notification."""
-        config = TelegramConfig(enabled=True, token='test_token', chat_id='test_chat_id')
-        bot = TelegramBot(config)
+        bot = self._make_bot()
 
         trade = {
             'pair': 'BTC/USDT',
@@ -70,8 +83,7 @@ class TestTelegramRPC:
 
     def test_telegram_bot_notify_exit(self):
         """Test TelegramBot exit notification."""
-        config = TelegramConfig(enabled=True, token='test_token', chat_id='test_chat_id')
-        bot = TelegramBot(config)
+        bot = self._make_bot()
 
         trade = {
             'pair': 'BTC/USDT',
@@ -84,8 +96,7 @@ class TestTelegramRPC:
 
     def test_telegram_bot_notify_startup(self):
         """Test TelegramBot startup notification."""
-        config = TelegramConfig(enabled=True, token='test_token', chat_id='test_chat_id')
-        bot = TelegramBot(config)
+        bot = self._make_bot()
 
         assert bot.notify_startup('1.0.0', 'dry') is True
 

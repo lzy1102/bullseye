@@ -3,7 +3,7 @@ Event Engine - Event-driven core for the trading system
 Inspired by VeighNa (vnpy) event engine design
 """
 from typing import Callable, Dict, List, Optional, Any
-from queue import Queue, Empty
+from queue import Queue, Empty, Full
 from threading import Thread, Lock
 from enum import Enum
 import logging
@@ -126,7 +126,7 @@ class EventEngine:
             # Put a None to wake up the thread
             try:
                 self._queue.put_nowait(None)
-            except:
+            except Full:
                 pass  # Queue might be full, thread will timeout anyway
 
             # Wait for thread to terminate
@@ -146,7 +146,7 @@ class EventEngine:
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
-            except:
+            except Empty:
                 break
 
         logger.info("Event engine stopped")

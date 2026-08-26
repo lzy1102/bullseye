@@ -2,7 +2,7 @@
 Main Engine - Core trading engine
 Manages all gateways and routes events
 """
-from typing import Dict, List, Optional, Type, Any
+from typing import Dict, List, Optional, Type, Any, TYPE_CHECKING
 import logging
 from datetime import datetime
 
@@ -11,6 +11,9 @@ from .object import (
     ContractData, TickData, OrderData, TradeData,
     PositionData, AccountData, KlineData
 )
+
+if TYPE_CHECKING:
+    from bullseye.gateway.base import BaseGateway
 
 logger = logging.getLogger(__name__)
 

@@ -57,7 +57,7 @@ def list_backtest_results() -> list:
                 'size': stat.st_size,
                 'modified': datetime.fromtimestamp(stat.st_mtime)
             })
-        except:
+        except OSError:
             pass
     
     # Sort by modification time (newest first)

@@ -13,6 +13,7 @@ A quantitative trading framework compatible with [Freqtrade](https://github.com/
 - **Unified Interface** - Same strategy can trade across different markets
 - **Event-Driven Architecture** - High-performance event engine inspired by VeighNa (vnpy)
 - **Backtesting Engine** - Iterative backtesting with stoploss, trailing stop, ROI, and custom exit support
+  - T+1/T+N settlement enforcement (A-shares cannot be sold same-day in backtests)
 - **Hyperparameter Optimization** - Random search optimization with multiple loss functions
 - **Flexible Database** - SQLite (default), PostgreSQL, MySQL support
 - **Structured Exception Hierarchy** - Clear error handling with specific exception types
@@ -201,7 +202,7 @@ future:
 # Download crypto data
 bullseye download-data --exchange binance --pairs BTC/USDT ETH/USDT --timeframe 5m
 
-# Download stock data (requires AKShare or TuShare)
+# Download stock data (via AKShare, TuShare, or BaoStock)
 bullseye download-data --market stock --pairs 000001.SZ 000002.SZ
 ```
 
@@ -273,6 +274,15 @@ pip install xtquant
 ```
 Requires [miniQMT client](https://www.xuntou.net) running on Windows (or [xqshare](https://github.com/jasonhu/xqshare) remote on Linux/Mac).
 
+### Historical Data Feeds & Trading Calendar
+```bash
+pip install tushare akshare baostock exchange-calendars
+```
+- **TuShare**: requires free [token](https://tushare.pro/), best data quality (server-side adjustment)
+- **AKShare**: registration-free, wide coverage, best for research
+- **BaoStock**: registration-free historical K-line data with qfq/hfq adjustment
+- **exchange-calendars**: trading-calendar-aware T+1 settlement dates (holidays skipped, e.g. buying before National Day settles after the holiday). Falls back to weekend-skip when not installed.
+
 ### Futures (CTP)
 ```bash
 pip install openctp-ctp==6.7.11.*
@@ -342,7 +352,7 @@ bullseye/
 ├── data/             # Data providers
 │   ├── dataprovider.py
 │   ├── history/       # Historical data handlers (Parquet, Feather, JSON)
-│   └── datafeed/      # External data feeds (AKShare, TuShare)
+│   └── datafeed/      # External data feeds (AKShare, TuShare, BaoStock)
 ├── backtesting/      # Backtesting engine
 │   ├── engine.py      # BacktestEngine
 │   └── result.py      # BacktestResult, BacktestTrade, BacktestMetrics
@@ -405,7 +415,7 @@ pytest tests/test_optimize/ -v
 pytest tests/ --cov=bullseye --cov-report=html
 ```
 
-Current test status: **141 passed, 13 skipped** (skipped tests require external dependencies like akshare/tushare)
+Current test status: **217 passed, 14 skipped** (skipped tests require external dependencies like akshare/tushare/baostock or network access)
 
 ## Compatibility with Freqtrade
 

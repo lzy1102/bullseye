@@ -23,7 +23,7 @@ def get_db_url(config_path: Optional[str] = None) -> str:
         from ..configuration import Config
         config_obj = Config(config_path or "config.yaml")
         return config_obj.get('db_url', 'sqlite:///user_data/tradesv3.sqlite')
-    except:
+    except Exception:
         return 'sqlite:///user_data/tradesv3.sqlite'
 
 

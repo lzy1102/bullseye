@@ -56,6 +56,105 @@ class NoEntryStrategy(IStrategy):
         return dataframe
 
 
+class FlatTestStrategy(IStrategy):
+    """Always enters; no ROI/stoploss/trailing - trades only close via force_exit."""
+
+    timeframe = "1h"
+    startup_candle_count = 10
+    minimal_roi = {}
+    stoploss = -1.0
+    trailing_stop = False
+
+    def populate_indicators(self, dataframe, metadata):
+        return dataframe
+
+    def populate_entry_trend(self, dataframe, metadata):
+        dataframe["enter_long"] = 1
+        return dataframe
+
+    def populate_exit_trend(self, dataframe, metadata):
+        dataframe["exit_long"] = 0
+        return dataframe
+
+
+class ImmediateExitStrategy(FlatTestStrategy):
+    """Enters and exits on every candle - isolates settlement blocking behavior."""
+
+    def populate_exit_trend(self, dataframe, metadata):
+        dataframe["exit_long"] = 1
+        return dataframe
+
+
+class SingleTradeExitSignalStrategy(ImmediateExitStrategy):
+    """Opens exactly ONE position; exit signal fires on every candle afterwards."""
+
+    def __init__(self):
+        self._entered = False
+
+    def confirm_trade_entry(self, *args, **kwargs) -> bool:
+        if self._entered:
+            return False
+        self._entered = True
+        return True
+
+
+def make_flat_data(pair_periods: Dict[str, int], start: str = "2024-01-01") -> Dict[str, pd.DataFrame]:
+    """Create flat OHLCV data (all prices = 100) for each pair."""
+    data = {}
+    for pair, periods in pair_periods.items():
+        dates = pd.date_range(start=start, periods=periods, freq="1h")
+        data[pair] = pd.DataFrame({
+            "date": dates,
+            "open": [100.0] * periods,
+            "high": [100.0] * periods,
+            "low": [100.0] * periods,
+            "close": [100.0] * periods,
+            "volume": [1000.0] * periods,
+        })
+    return data
+
+
+def run_flat_backtest(strategy_cls, data):
+    """Run the backtest loop over flat in-memory data and return closed trades."""
+    from bullseye.order.position_manager import PositionManager
+    from bullseye.order.order_executor import OrderExecutor
+    from bullseye.wallets.wallets import Wallets
+
+    config = Config()
+    config.set("dry_run_wallet", 1000)
+    config.set("stake_amount", 100)
+    config.set("max_open_trades", 1)
+
+    strategy = strategy_cls()
+    pairlist = list(data.keys())
+    wallets = Wallets(config, initial_balance=1000)
+    position_manager = PositionManager(config, wallets)
+    position_manager.set_strategy(strategy)
+    order_executor = OrderExecutor(config, position_manager, wallets)
+    order_executor.set_strategy(strategy)
+    bt_dp = BacktestDataProvider(data, pairlist)
+    # Mirror what BacktestEngine.run() injects onto the strategy
+    strategy.dp = bt_dp
+    strategy.wallets = wallets
+    strategy.config = config.to_dict()
+
+    engine = BacktestEngine(config)
+    engine._fee_rate = 0.001
+    return engine._run_backtest_loop(
+        strategy=strategy,
+        data=data,
+        pairlist=pairlist,
+        timeframe="1h",
+        wallets=wallets,
+        position_manager=position_manager,
+        order_executor=order_executor,
+        bt_dp=bt_dp,
+        max_open_trades=1,
+        stake_amount=100,
+        initial_balance=1000,
+    )
+
+
 def create_test_data(
     pair: str = "BTC/USDT",
     timeframe: str = "1h",
@@ -228,6 +327,98 @@ class TestBacktestEngine:
         assert BacktestEngine._timeframe_to_minutes("1h") == 60
         assert BacktestEngine._timeframe_to_minutes("4h") == 240
         assert BacktestEngine._timeframe_to_minutes("1d") == 1440
+
+    def test_fee_charged_exactly_once_per_side(self):
+        """Regression: fee_open must not be double-charged.
+
+        Flat prices -> zero gross profit. A single forced-exit trade should
+        lose exactly fee_open + fee_close (= 2 * stake * fee_rate).
+        """
+        from bullseye.order.position_manager import PositionManager
+        from bullseye.order.order_executor import OrderExecutor
+        from bullseye.wallets.wallets import Wallets
+
+        config = Config()
+        config.set("dry_run_wallet", 1000)
+        config.set("stake_amount", 100)
+        config.set("max_open_trades", 1)
+
+        periods = 50
+        dates = pd.date_range(start=datetime(2024, 1, 1), periods=periods, freq="1h")
+        flat = pd.DataFrame({
+            "date": dates,
+            "open": [100.0] * periods,
+            "high": [100.0] * periods,
+            "low": [100.0] * periods,
+            "close": [100.0] * periods,
+            "volume": [1000.0] * periods,
+        })
+
+        strategy = FlatTestStrategy()
+        data = {"BTC/USDT": flat}
+        pairlist = ["BTC/USDT"]
+        wallets = Wallets(config, initial_balance=1000)
+        position_manager = PositionManager(config, wallets)
+        position_manager.set_strategy(strategy)
+        order_executor = OrderExecutor(config, position_manager, wallets)
+        order_executor.set_strategy(strategy)
+        bt_dp = BacktestDataProvider(data, pairlist)
+
+        engine = BacktestEngine(config)
+        engine._fee_rate = 0.001
+
+        trades = engine._run_backtest_loop(
+            strategy=strategy,
+            data=data,
+            pairlist=pairlist,
+            timeframe="1h",
+            wallets=wallets,
+            position_manager=position_manager,
+            order_executor=order_executor,
+            bt_dp=bt_dp,
+            max_open_trades=1,
+            stake_amount=100,
+            initial_balance=1000,
+        )
+
+        assert len(trades) == 1
+        expected_fees = 2 * 100 * 0.001
+        assert trades[0].profit_abs == pytest.approx(-expected_fees)
+        assert wallets.get_free("USDT") == pytest.approx(1000 - expected_fees)
+
+
+class TestSettlementRestriction:
+    """T+1 settlement must block same-day exits in backtesting."""
+
+    def test_t1_stock_exit_blocked_until_settlement_date(self):
+        """A-share pair: exit signals before the settlement date must be ignored."""
+        data = make_flat_data({"000001.SZ": 80})
+        trades = run_flat_backtest(SingleTradeExitSignalStrategy, data)
+
+        assert len(trades) == 1
+        trade = trades[0]
+        from bullseye.order.settlement import get_settlement_date
+        expected_settlement = get_settlement_date(trade.entry_date, "000001.SZ")
+
+        # Exit signal fired on every candle yet exit only happened after T+1
+        assert trade.exit_reason == "exit_signal"
+        assert trade.exit_date >= expected_settlement
+        # Entry at 2024-01-01 10:00 -> settlement 2024-01-02 09:30
+        # -> first sellable hourly candle is 2024-01-02 10:00 (~24h hold)
+        assert trade.trade_duration >= 23.0
+
+    def test_t0_crypto_exits_immediately(self):
+        """Crypto pair: no settlement restriction - round-trips every candle."""
+        data = make_flat_data({"BTC/USDT": 30})
+        trades = run_flat_backtest(ImmediateExitStrategy, data)
+
+        assert len(trades) > 10
+        for trade in trades:
+            if trade.exit_reason == "force_exit":
+                continue
+            assert trade.trade_duration == pytest.approx(1.0)
+            assert trade.exit_reason == "exit_signal"
+
 
     def test_result_save_and_load(self, tmp_path):
         result = BacktestResult(

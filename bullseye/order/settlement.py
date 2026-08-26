@@ -45,6 +45,9 @@ class SettlementRule:
     # Market open time (for settlement date)
     market_open_hour: int = 9
     market_open_minute: int = 30
+    # exchange_calendars calendar code (e.g. "XSHG" for Shanghai).
+    # When set and exchange_calendars is installed, holidays are skipped too.
+    calendar_code: Optional[str] = None
 
 
 # Predefined settlement rules for different markets
@@ -100,6 +103,7 @@ SETTLEMENT_RULES: Dict[str, SettlementRule] = {
         skip_weekends=True,
         market_open_hour=9,
         market_open_minute=30,
+        calendar_code="XSHG",  # Shanghai Stock Exchange calendar (holidays aware)
     ),
     "tw_stock": SettlementRule(
         market_name="Taiwan Stock",
@@ -362,7 +366,25 @@ class SettlementDetector:
             # T+0: Can sell immediately
             return open_date
 
-        # T+N: Calculate settlement date
+        settlement_session = None
+
+        # Preferred path: use the exchange trading calendar (holidays aware)
+        if rule.calendar_code:
+            settlement_session = self._next_trading_sessions(
+                open_date, rule.settlement_days, rule.calendar_code
+            )
+
+        if settlement_session is not None:
+            return datetime.combine(
+                settlement_session, datetime.min.time()
+            ).replace(
+                hour=rule.market_open_hour,
+                minute=rule.market_open_minute,
+                second=0,
+                microsecond=0,
+            )
+
+        # Fallback: weekend-skip only (no calendar available)
         settlement_date = open_date
         days_added = 0
         max_iterations = rule.settlement_days * 10 + 100  # Safeguard against infinite loops
@@ -407,9 +429,53 @@ class SettlementDetector:
 
         return settlement_date
 
+    @staticmethod
+    def _next_trading_sessions(
+        open_date: datetime, num_days: int, calendar_code: str
+    ) -> Optional[datetime]:
+        """
+        Get the Nth trading session strictly after open_date using exchange_calendars.
+
+        Args:
+            open_date: Position open date
+            num_days: Number of trading sessions to advance (T+N)
+            calendar_code: Calendar code (e.g. "XSHG")
+
+        Returns:
+            The Nth next session date, or None if exchange_calendars is unavailable.
+        """
+        try:
+            import pandas as pd
+            from exchange_calendars import get_calendar
+        except ImportError:
+            logger.debug("exchange_calendars not installed; falling back to weekend-skip")
+            return None
+
+        try:
+            calendar = _get_cached_calendar(calendar_code)
+            first = pd.Timestamp(open_date.date()) + pd.Timedelta(days=1)
+            horizon = first + pd.Timedelta(days=num_days * 30 + 40)
+            sessions = calendar.sessions_in_range(first, horizon)
+            nth_session = sessions[num_days - 1]
+            return nth_session.date()
+        except Exception as e:
+            logger.warning(f"Trading calendar lookup failed ({calendar_code}): {e}")
+            return None
+
 
 # Global instance for convenience
 _detector = SettlementDetector()
+
+# Cache for exchange_calendars instances (loading a calendar is expensive)
+_calendar_cache: Dict = {}
+
+
+def _get_cached_calendar(calendar_code: str):
+    """Get an exchange_calendars calendar instance (cached)."""
+    if calendar_code not in _calendar_cache:
+        from exchange_calendars import get_calendar
+        _calendar_cache[calendar_code] = get_calendar(calendar_code)
+    return _calendar_cache[calendar_code]
 
 
 def init_settlement_detector(config: Optional[Dict] = None) -> None:

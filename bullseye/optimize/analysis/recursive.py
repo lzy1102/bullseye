@@ -198,8 +198,8 @@ def recursive_analysis(strategy: str, pair: str, timeframe: str, timerange: Opti
             sys.exit(1)
         
         # Create strategy instance
-        strategy_instance = strategy_class()
-        
+        strategy_class()
+
         # Parse startup periods
         periods = [0, 10, 50, 100, 200, 500]
         if startup_periods:

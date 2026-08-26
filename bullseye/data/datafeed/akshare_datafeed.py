@@ -95,10 +95,10 @@ class AKShareDatafeed(BaseDatafeed):
             import akshare as ak
             self._ak = ak
             logger.info("AKShare initialized successfully")
-        except ImportError:
+        except ImportError as e:
             raise ImportError(
                 "AKShare is not installed. Please run: pip install akshare"
-            )
+            ) from e
 
     @property
     def ak(self):

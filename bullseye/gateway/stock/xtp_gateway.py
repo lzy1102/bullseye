@@ -89,9 +89,7 @@ class XtpGateway(BaseGateway):
     def send_order(self, req: Dict[str, Any]) -> str:
         """Send order"""
         # TODO: Implement XTP order sending
-        side = 1 if req["direction"] == Direction.LONG else 2  # XTP: 1=buy, 2=sell
-        price_type = 1 if req["order_type"] == OrderType.LIMIT else 2  # XTP: 1=limit, 2=market
-
+        # Mapping reference: side 1=buy/2=sell, price_type 1=limit/2=market
         orderid = f"XTP_{self._client_id}_{req['symbol']}"
         logger.info(f"Order sent: {orderid}")
         return orderid

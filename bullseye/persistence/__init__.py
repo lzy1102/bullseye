@@ -9,7 +9,7 @@ from .models import (
     Trade,
     Order,
     PairLock,
-    Index,
+    IndexRecord,
     BacktestResult,
 )
 
@@ -18,6 +18,6 @@ __all__ = [
     "Trade",
     "Order",
     "PairLock",
-    "Index",
+    "IndexRecord",
     "BacktestResult",
 ]

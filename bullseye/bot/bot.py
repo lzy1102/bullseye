@@ -262,7 +262,7 @@ class BullseyeBot:
             try:
                 return self._strategy_class()
             except Exception as e:
-                raise ImportError(f"Failed to instantiate provided strategy class: {e}")
+                raise ImportError(f"Failed to instantiate provided strategy class: {e}") from e
 
         # Load from config
         strategy_name = self._config.strategy
