@@ -18,13 +18,12 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from bullseye.configuration.config import Config
 from bullseye.strategy.interface import IStrategy
 from bullseye.wallets.wallets import Wallets
 from bullseye.order.settlement import (
-    SettlementDetector,
     SettlementRule,
     SettlementType,
     detect_settlement_rule,

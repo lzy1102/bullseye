@@ -1,11 +1,9 @@
 """
 Test CLI commands
 """
-import pytest
 import sys
 from pathlib import Path
 from click.testing import CliRunner
-from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 

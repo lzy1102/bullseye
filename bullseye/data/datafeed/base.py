@@ -3,7 +3,7 @@ Base Datafeed - Abstract base class for market data sources
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Callable, Dict, List, Optional, Any
 import logging
 

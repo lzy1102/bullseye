@@ -5,7 +5,7 @@ Provides a Freqtrade-compatible interface for strategies to access
 market data, exchange information, and runtime state.
 """
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd

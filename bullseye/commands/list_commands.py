@@ -4,7 +4,6 @@ List Commands for Bullseye
 Commands for listing exchanges, markets, pairs, and other information.
 """
 import sys
-from pathlib import Path
 from typing import Optional
 
 import click
@@ -87,7 +86,7 @@ INTL_GATEWAYS = [
 
 
 @click.command(name='list-exchanges')
-@click.option('--market-type', type=click.Choice(['crypto', 'stock', 'future', 'all']), 
+@click.option('--market-type', type=click.Choice(['crypto', 'stock', 'future', 'all']),
               default='all', help='Filter by market type')
 def list_exchanges(market_type: str):
     """
@@ -101,7 +100,7 @@ def list_exchanges(market_type: str):
         bullseye list-exchanges --market-type stock
     """
     console.print("[bold green]Supported Exchanges and Gateways[/bold green]\n")
-    
+
     if market_type in ('all', 'crypto'):
         console.print("[bold cyan]Cryptocurrency Exchanges (via CCXT):[/bold cyan]")
         table = Table(show_header=True, header_style="bold magenta")
@@ -109,12 +108,12 @@ def list_exchanges(market_type: str):
         table.add_column("Name", style="green")
         table.add_column("Markets", style="blue")
         table.add_column("Status", style="yellow")
-        
+
         for ex_id, name, markets, status in CRYPTO_EXCHANGES:
             table.add_row(ex_id, name, markets, status)
         console.print(table)
         console.print()
-    
+
     if market_type in ('all', 'stock'):
         console.print("[bold cyan]Stock Gateways (China A-shares):[/bold cyan]")
         table = Table(show_header=True, header_style="bold magenta")
@@ -122,12 +121,12 @@ def list_exchanges(market_type: str):
         table.add_column("Name", style="green")
         table.add_column("Features", style="blue")
         table.add_column("Status", style="yellow")
-        
+
         for gw_id, name, features, status in STOCK_GATEWAYS:
             table.add_row(gw_id, name, features, status)
         console.print(table)
         console.print()
-    
+
     if market_type in ('all', 'future'):
         console.print("[bold cyan]Futures Gateways (China):[/bold cyan]")
         table = Table(show_header=True, header_style="bold magenta")
@@ -135,12 +134,12 @@ def list_exchanges(market_type: str):
         table.add_column("Name", style="green")
         table.add_column("Exchanges", style="blue")
         table.add_column("Status", style="yellow")
-        
+
         for gw_id, name, exchanges, status in FUTURES_GATEWAYS:
             table.add_row(gw_id, name, exchanges, status)
         console.print(table)
         console.print()
-    
+
     if market_type in ('all',):
         console.print("[bold cyan]International Gateways:[/bold cyan]")
         table = Table(show_header=True, header_style="bold magenta")
@@ -148,7 +147,7 @@ def list_exchanges(market_type: str):
         table.add_column("Name", style="green")
         table.add_column("Markets", style="blue")
         table.add_column("Status", style="yellow")
-        
+
         for gw_id, name, markets, status in INTL_GATEWAYS:
             table.add_row(gw_id, name, markets, status)
         console.print(table)
@@ -160,7 +159,7 @@ def list_exchanges(market_type: str):
 @click.option('--active-only', is_flag=True, help='Show only active markets')
 @click.option('--print-json', is_flag=True, help='Output as JSON')
 @click.option('--config', '-c', type=str, help='Configuration file')
-def list_markets(exchange: Optional[str], quote: Optional[str], 
+def list_markets(exchange: Optional[str], quote: Optional[str],
                  active_only: bool, print_json: bool, config: Optional[str]):
     """
     List markets on exchange
@@ -174,7 +173,7 @@ def list_markets(exchange: Optional[str], quote: Optional[str],
     """
     try:
         import ccxt
-        
+
         # Get exchange name from config or parameter
         if not exchange:
             try:
@@ -183,16 +182,16 @@ def list_markets(exchange: Optional[str], quote: Optional[str],
                 exchange = config_obj.get('exchange.name', 'binance')
             except Exception:
                 exchange = 'binance'
-        
+
         console.print(f"[green]Fetching markets from {exchange}...[/green]\n")
-        
+
         # Create exchange instance
         exchange_class = getattr(ccxt, exchange.lower())
         exchange_instance = exchange_class({'enableRateLimit': True})
-        
+
         # Load markets
         markets = exchange_instance.load_markets()
-        
+
         # Filter markets
         filtered_markets = []
         for symbol, market in markets.items():
@@ -201,7 +200,7 @@ def list_markets(exchange: Optional[str], quote: Optional[str],
             if quote and market.get('quote') != quote.upper():
                 continue
             filtered_markets.append((symbol, market))
-        
+
         if print_json:
             import json
             output = {symbol: {
@@ -212,18 +211,18 @@ def list_markets(exchange: Optional[str], quote: Optional[str],
             } for symbol, m in filtered_markets}
             console.print(json.dumps(output, indent=2))
             return
-        
+
         # Display as table
         console.print(f"[bold green]Markets on {exchange}[/bold green]")
         console.print(f"[dim]Total: {len(filtered_markets)} markets[/dim]\n")
-        
+
         table = Table(show_header=True, header_style="bold magenta")
         table.add_column("Symbol", style="cyan")
         table.add_column("Base", style="green")
         table.add_column("Quote", style="blue")
         table.add_column("Type", style="yellow")
         table.add_column("Active", style="white")
-        
+
         # Show first 100 markets
         for symbol, market in filtered_markets[:100]:
             table.add_row(
@@ -233,12 +232,12 @@ def list_markets(exchange: Optional[str], quote: Optional[str],
                 market.get('type', 'spot'),
                 "✓" if market.get('active', True) else "✗"
             )
-        
+
         console.print(table)
-        
+
         if len(filtered_markets) > 100:
             console.print(f"\n[yellow]... and {len(filtered_markets) - 100} more markets[/yellow]")
-        
+
     except ImportError:
         console.print("[red]CCXT not installed. Install with: pip install ccxt[/red]")
         sys.exit(1)
@@ -252,7 +251,7 @@ def list_markets(exchange: Optional[str], quote: Optional[str],
 @click.option('--quote', type=str, help='Filter by quote currency')
 @click.option('--print-json', is_flag=True, help='Output as JSON')
 @click.option('--config', '-c', type=str, help='Configuration file')
-def list_pairs(exchange: Optional[str], quote: Optional[str], 
+def list_pairs(exchange: Optional[str], quote: Optional[str],
                print_json: bool, config: Optional[str]):
     """
     List trading pairs
@@ -266,7 +265,7 @@ def list_pairs(exchange: Optional[str], quote: Optional[str],
     """
     try:
         import ccxt
-        
+
         # Get exchange name
         if not exchange:
             try:
@@ -275,16 +274,16 @@ def list_pairs(exchange: Optional[str], quote: Optional[str],
                 exchange = config_obj.get('exchange.name', 'binance')
             except Exception:
                 exchange = 'binance'
-        
+
         console.print(f"[green]Fetching pairs from {exchange}...[/green]\n")
-        
+
         # Create exchange instance
         exchange_class = getattr(ccxt, exchange.lower())
         exchange_instance = exchange_class({'enableRateLimit': True})
-        
+
         # Load markets
         markets = exchange_instance.load_markets()
-        
+
         # Filter for spot markets only
         pairs = []
         for symbol, market in markets.items():
@@ -295,19 +294,19 @@ def list_pairs(exchange: Optional[str], quote: Optional[str],
             if not market.get('active', True):
                 continue
             pairs.append(symbol)
-        
+
         # Sort pairs
         pairs.sort()
-        
+
         if print_json:
             import json
             console.print(json.dumps(pairs, indent=2))
             return
-        
+
         # Display
         console.print(f"[bold green]Trading Pairs on {exchange}[/bold green]")
         console.print(f"[dim]Total: {len(pairs)} pairs[/dim]\n")
-        
+
         # Format for pairlist config
         console.print("[yellow]Pairs for configuration file:[/yellow]")
         console.print("```yaml")
@@ -318,10 +317,10 @@ def list_pairs(exchange: Optional[str], quote: Optional[str],
         for pair in pairs[:50]:  # Show first 50
             console.print(f"        - {pair}")
         console.print("```")
-        
+
         if len(pairs) > 50:
             console.print(f"\n[yellow]... and {len(pairs) - 50} more pairs[/yellow]")
-        
+
     except ImportError:
         console.print("[red]CCXT not installed. Install with: pip install ccxt[/red]")
         sys.exit(1)
@@ -346,18 +345,18 @@ def list_hyperoptloss(print_json: bool):
         import json
         console.print(json.dumps(HYPEROPT_LOSS_FUNCTIONS, indent=2))
         return
-    
+
     console.print("[bold green]Available Hyperopt Loss Functions[/bold green]\n")
-    
+
     table = Table(show_header=True, header_style="bold magenta")
     table.add_column("Loss Function", style="cyan")
     table.add_column("Description", style="green")
-    
+
     for name, description in HYPEROPT_LOSS_FUNCTIONS.items():
         table.add_row(name, description)
-    
+
     console.print(table)
-    
+
     console.print("\n[yellow]Usage in configuration:[/yellow]")
     console.print("```yaml")
     console.print("hyperopt:")
@@ -376,17 +375,17 @@ def list_timeframes():
         bullseye list-timeframes
     """
     console.print("[bold green]Supported Timeframes[/bold green]\n")
-    
+
     table = Table(show_header=True, header_style="bold magenta")
     table.add_column("Code", style="cyan")
     table.add_column("Description", style="green")
     table.add_column("Use Case", style="blue")
-    
+
     for code, desc, use_case in TIMEFRAMES:
         table.add_row(code, desc, use_case)
-    
+
     console.print(table)
-    
+
     console.print("\n[yellow]Usage in strategy:[/yellow]")
     console.print("```python")
     console.print("class MyStrategy(IStrategy):")

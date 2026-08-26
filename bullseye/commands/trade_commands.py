@@ -3,12 +3,9 @@ Trade Commands for Bullseye
 
 Commands for trade management and utilities.
 """
-import os
 import sys
 import json
-from pathlib import Path
 from typing import Optional
-from datetime import datetime
 
 import click
 from rich.console import Console
@@ -52,15 +49,15 @@ def show_trades(db_url: Optional[str], trade_ids: Optional[str], pair: Optional[
         bullseye show-trades --profit-only
     """
     db_url = db_url or get_db_url(config)
-    
-    console.print(f"[bold green]Trade History[/bold green]")
+
+    console.print("[bold green]Trade History[/bold green]")
     console.print(f"[dim]Database: {db_url}[/dim]\n")
-    
+
     # This is a placeholder implementation
     # In a real implementation, this would query the database
     console.print("[yellow]Note: This command requires a database connection.[/yellow]")
     console.print("[dim]The database models need to be implemented to fetch actual trades.[/dim]\n")
-    
+
     # Show example output
     if print_json:
         example_trades = [
@@ -88,10 +85,10 @@ def show_trades(db_url: Optional[str], trade_ids: Optional[str], pair: Optional[
         table.add_column("Close Date", style="blue")
         table.add_column("Profit %", style="yellow")
         table.add_column("Status", style="white")
-        
+
         # Example row
         table.add_row("1", "BTC/USDT", "2024-01-01 10:00", "2024-01-01 12:00", "+2.38%", "closed")
-        
+
         console.print(table)
         console.print("\n[dim](Example output - actual implementation requires database models)[/dim]")
 
@@ -119,18 +116,18 @@ def test_pairlist(config: Optional[str], exchange: Optional[str], print_json: bo
     except Exception as e:
         console.print(f"[red]Error loading configuration: {e}[/red]")
         sys.exit(1)
-    
-    console.print(f"[bold green]Pairlist Configuration Test[/bold green]")
+
+    console.print("[bold green]Pairlist Configuration Test[/bold green]")
     console.print(f"[blue]Exchange:[/blue] {exchange}\n")
-    
+
     # Parse pairlist configuration
     selected_pairs = []
-    
+
     for item in pairlist_config:
         if isinstance(item, dict):
             method = item.get('method', '')
             method_config = item.get('config', {})
-            
+
             if method == 'StaticPairList':
                 pairs = method_config.get('pairs', [])
                 selected_pairs.extend(pairs)
@@ -139,14 +136,14 @@ def test_pairlist(config: Optional[str], exchange: Optional[str], print_json: bo
                 number_assets = method_config.get('number_assets', 20)
                 console.print(f"[cyan]VolumePairList:[/cyan] Top {number_assets} by volume")
             elif method == 'PrecisionFilter':
-                console.print(f"[cyan]PrecisionFilter:[/cyan] Applied")
+                console.print("[cyan]PrecisionFilter:[/cyan] Applied")
             elif method == 'PriceFilter':
-                console.print(f"[cyan]PriceFilter:[/cyan] Applied")
+                console.print("[cyan]PriceFilter:[/cyan] Applied")
             elif method == 'SpreadFilter':
-                console.print(f"[cyan]SpreadFilter:[/cyan] Applied")
+                console.print("[cyan]SpreadFilter:[/cyan] Applied")
         elif isinstance(item, str):
             selected_pairs.append(item)
-    
+
     # Remove duplicates while preserving order
     seen = set()
     unique_pairs = []
@@ -154,15 +151,15 @@ def test_pairlist(config: Optional[str], exchange: Optional[str], print_json: bo
         if pair not in seen:
             seen.add(pair)
             unique_pairs.append(pair)
-    
+
     console.print(f"\n[bold green]Selected Pairs ({len(unique_pairs)}):[/bold green]")
-    
+
     if print_json:
         console.print(json.dumps(unique_pairs, indent=2))
     else:
         for i, pair in enumerate(unique_pairs, 1):
             console.print(f"  {i}. {pair}")
-    
+
     console.print("\n[yellow]Note: Dynamic pairlists (VolumePairList) require exchange connection for full results.[/yellow]")
 
 
@@ -180,33 +177,33 @@ def convert_db(source_db: str, target_db: str, dry_run: bool):
         bullseye convert-db --source-db sqlite:///trades.db --target-db postgresql://user:pass@localhost/trades
         bullseye convert-db --source-db sqlite:///trades.db --target-db mysql://user:pass@localhost/trades --dry-run
     """
-    console.print(f"[bold green]Database Conversion[/bold green]")
+    console.print("[bold green]Database Conversion[/bold green]")
     console.print(f"[blue]Source:[/blue] {source_db}")
     console.print(f"[blue]Target:[/blue] {target_db}")
-    
+
     if dry_run:
         console.print("\n[yellow]Dry run mode - no data will be converted[/yellow]")
-    
+
     # Determine database types
     source_type = 'unknown'
     target_type = 'unknown'
-    
+
     if source_db.startswith('sqlite'):
         source_type = 'SQLite'
     elif source_db.startswith('postgresql'):
         source_type = 'PostgreSQL'
     elif source_db.startswith('mysql'):
         source_type = 'MySQL'
-    
+
     if target_db.startswith('sqlite'):
         target_type = 'SQLite'
     elif target_db.startswith('postgresql'):
         target_type = 'PostgreSQL'
     elif target_db.startswith('mysql'):
         target_type = 'MySQL'
-    
+
     console.print(f"\n[blue]Conversion:[/blue] {source_type} -> {target_type}")
-    
+
     if dry_run:
         console.print("\n[dim]The following tables would be converted:[/dim]")
         console.print("  - trades")
@@ -214,13 +211,13 @@ def convert_db(source_db: str, target_db: str, dry_run: bool):
         console.print("  - pairlocks")
         console.print("  - key_value_store")
         return
-    
+
     # Implementation would:
     # 1. Connect to source database
     # 2. Read all data
     # 3. Connect to target database
     # 4. Create tables
     # 5. Insert data
-    
+
     console.print("\n[yellow]Database conversion - implementation pending[/yellow]")
     console.print("[dim]This command will convert all tables from source to target database[/dim]")

@@ -6,7 +6,7 @@ All Freqtrade strategies can be used directly without any modifications.
 """
 from typing import Dict, List, Optional, Tuple, Union, Callable, Any, TYPE_CHECKING
 from pandas import DataFrame
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from functools import wraps
 from enum import Enum
 import logging
@@ -264,7 +264,7 @@ class IStrategy:
         return False
 
     # ==================== Additional Freqtrade Methods ====================
-    
+
     def custom_roi(
         self,
         pair: str,
@@ -279,7 +279,7 @@ class IStrategy:
         Override this to implement dynamic ROI based on market conditions.
         """
         return None
-    
+
     def custom_exit_price(
         self,
         pair: str,
@@ -296,7 +296,7 @@ class IStrategy:
         Override to modify the exit price before placing the exit order.
         """
         return proposed_rate
-    
+
     def adjust_entry_price(
         self,
         pair: str,
@@ -312,7 +312,7 @@ class IStrategy:
         Override to modify the entry price before placing the entry order.
         """
         return proposed_rate
-    
+
     def adjust_exit_price(
         self,
         pair: str,
@@ -329,7 +329,7 @@ class IStrategy:
         Override to modify the exit price before placing the exit order.
         """
         return proposed_rate
-    
+
     def adjust_order_price(
         self,
         pair: str,
@@ -345,7 +345,7 @@ class IStrategy:
         Override to modify order price before placing any order.
         """
         return proposed_rate
-    
+
     def order_filled(
         self,
         pair: str,
@@ -362,7 +362,7 @@ class IStrategy:
         pass
 
     # ==================== Pair Locking Methods ====================
-    
+
     def lock_pair(
         self,
         pair: str,
@@ -379,7 +379,7 @@ class IStrategy:
             reason: Reason for locking
         """
         pass
-    
+
     def unlock_pair(
         self,
         pair: str,
@@ -392,7 +392,7 @@ class IStrategy:
             pair: Trading pair to unlock
         """
         pass
-    
+
     def is_pair_locked(
         self,
         pair: str,

@@ -1,9 +1,7 @@
 """
 Integration tests for Bullseye
 """
-import pytest
 import sys
-import tempfile
 import yaml
 from pathlib import Path
 
@@ -48,8 +46,6 @@ class TestIntegration:
     def test_data_handler_integration(self, tmp_path):
         """Test data handler integration with CLI."""
         from bullseye.data.history import FeatherDataHandler
-        from click.testing import CliRunner
-        from bullseye.__main__ import cli
 
         handler = FeatherDataHandler(data_dir=str(tmp_path / 'data'))
 

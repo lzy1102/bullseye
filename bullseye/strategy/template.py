@@ -4,8 +4,6 @@ Strategy Template Generator - Create strategy files from templates
 This module provides functionality to generate strategy template files
 compatible with Freqtrade's IStrategy interface.
 """
-import os
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 import logging

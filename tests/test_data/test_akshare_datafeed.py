@@ -7,7 +7,6 @@ Run this script to verify the AKShare datafeed implementation:
 Note: These tests require network access and akshare package.
 """
 import sys
-import os
 from pathlib import Path
 from datetime import datetime, timedelta
 import pytest
@@ -16,7 +15,7 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 try:
-    import akshare
+    import akshare  # noqa: F401 (availability probe)
     HAS_AKSHARE = True
 except ImportError:
     HAS_AKSHARE = False

@@ -10,8 +10,7 @@ import logging
 from ..trader.eventengine import EventEngine, EventType
 from ..trader.object import (
     ContractData, TickData, OrderData, TradeData,
-    PositionData, AccountData, KlineData, OrderBookData,
-    OrderType, Direction, Offset
+    PositionData, AccountData, KlineData, OrderBookData
 )
 
 logger = logging.getLogger(__name__)

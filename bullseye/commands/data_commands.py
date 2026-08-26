@@ -3,13 +3,11 @@ Data Commands for Bullseye
 
 Commands for downloading, listing, and converting market data.
 """
-import os
 import sys
-import json
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional
 
 import click
 from rich.console import Console
@@ -85,7 +83,7 @@ def _download_data_impl(exchange: Optional[str], pairs: Optional[str], timeframe
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
 
-    console.print(f"[bold green]Downloading Market Data[/bold green]")
+    console.print("[bold green]Downloading Market Data[/bold green]")
     console.print(f"[blue]Exchange:[/blue] {exchange}")
     console.print(f"[blue]Pairs:[/blue] {', '.join(pairs_list)}")
     console.print(f"[blue]Timeframes:[/blue] {', '.join(timeframes_list)}")
@@ -178,7 +176,7 @@ def _download_data_impl(exchange: Optional[str], pairs: Optional[str], timeframe
 
                 # Convert to DataFrame
                 if not all_ohlcv:
-                    console.print(f"[yellow]  No data downloaded[/yellow]")
+                    console.print("[yellow]  No data downloaded[/yellow]")
                     continue
 
                 df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -209,7 +207,7 @@ def _download_data_impl(exchange: Optional[str], pairs: Optional[str], timeframe
                 console.print(f"[red]  ✗ Error: {e}[/red]")
                 logger.exception("Download error")
 
-    console.print(f"\n[green]✓ Data download complete![/green]")
+    console.print("\n[green]✓ Data download complete![/green]")
     console.print(f"[blue]Data saved to:[/blue] {data_dir}")
 
 
@@ -274,14 +272,14 @@ def list_data(exchange: Optional[str], data_format: Optional[str], print_json: b
         exchange = exchange or config_obj.get('exchange.name', 'binance')
     except Exception:
         exchange = exchange or 'binance'
-    
+
     data_dir = get_data_dir(exchange)
-    
+
     if not data_dir.exists():
         console.print(f"[yellow]No data directory found: {data_dir}[/yellow]")
         console.print("[yellow]Run 'bullseye download-data' first.[/yellow]")
         return
-    
+
     # Find all data files
     data_files = []
     for fmt in DATA_FORMATS:
@@ -294,7 +292,7 @@ def list_data(exchange: Optional[str], data_format: Optional[str], print_json: b
                 timeframe = parts[1]
                 size = filepath.stat().st_size
                 modified = datetime.fromtimestamp(filepath.stat().st_mtime)
-                
+
                 data_files.append({
                     'pair': pair,
                     'timeframe': timeframe,
@@ -303,11 +301,11 @@ def list_data(exchange: Optional[str], data_format: Optional[str], print_json: b
                     'modified': modified,
                     'filepath': filepath
                 })
-    
+
     if not data_files:
         console.print(f"[yellow]No data files found in {data_dir}[/yellow]")
         return
-    
+
     if print_json:
         import json
         output = [{
@@ -319,20 +317,20 @@ def list_data(exchange: Optional[str], data_format: Optional[str], print_json: b
         } for f in data_files]
         console.print(json.dumps(output, indent=2))
         return
-    
+
     # Display as table
     console.print(f"[bold green]Downloaded Data ({exchange})[/bold green]\n")
-    
+
     table = Table(show_header=True, header_style="bold magenta")
     table.add_column("Pair", style="cyan")
     table.add_column("Timeframe", style="green")
     table.add_column("Format", style="blue")
     table.add_column("Size", style="yellow")
     table.add_column("Modified", style="white")
-    
+
     # Sort by pair and timeframe
     data_files.sort(key=lambda x: (x['pair'], x['timeframe']))
-    
+
     for f in data_files:
         size_str = f"{f['size'] / 1024:.1f} KB" if f['size'] < 1024*1024 else f"{f['size'] / (1024*1024):.1f} MB"
         table.add_row(
@@ -342,7 +340,7 @@ def list_data(exchange: Optional[str], data_format: Optional[str], print_json: b
             size_str,
             f['modified'].strftime('%Y-%m-%d %H:%M')
         )
-    
+
     console.print(table)
     console.print(f"\n[dim]Total: {len(data_files)} files[/dim]")
 
@@ -368,41 +366,41 @@ def convert_data(input_format: str, output_format: str, exchange: Optional[str],
     if input_format == output_format:
         console.print("[yellow]Input and output formats are the same. Nothing to do.[/yellow]")
         return
-    
+
     try:
         from ..configuration import Config
         config_obj = Config(config or "config.yaml")
         exchange = exchange or config_obj.get('exchange.name', 'binance')
     except Exception:
         exchange = exchange or 'binance'
-    
+
     data_dir = get_data_dir(exchange)
-    
+
     if not data_dir.exists():
         console.print(f"[red]Data directory not found: {data_dir}[/red]")
         sys.exit(1)
-    
+
     # Find files to convert
     pattern = f"*-*.{input_format}"
     if pair and timeframe:
         pattern = f"{pair.replace('/', '_')}-{timeframe}.{input_format}"
-    
+
     files_to_convert = list(data_dir.glob(pattern))
-    
+
     if not files_to_convert:
         console.print(f"[yellow]No {input_format} files found to convert[/yellow]")
         return
-    
-    console.print(f"[bold green]Converting Data Format[/bold green]")
+
+    console.print("[bold green]Converting Data Format[/bold green]")
     console.print(f"[blue]Input:[/blue] {input_format}")
     console.print(f"[blue]Output:[/blue] {output_format}")
     console.print(f"[blue]Files:[/blue] {len(files_to_convert)}\n")
-    
+
     import pandas as pd
-    
+
     converted = 0
     errors = 0
-    
+
     for filepath in files_to_convert:
         try:
             # Read input file
@@ -412,25 +410,25 @@ def convert_data(input_format: str, output_format: str, exchange: Optional[str],
                 df = pd.read_feather(filepath)
             elif input_format == 'parquet':
                 df = pd.read_parquet(filepath)
-            
+
             # Write output file
             output_filepath = filepath.with_suffix(f'.{output_format}')
-            
+
             if output_format == 'json':
                 df.to_json(output_filepath, orient='records', date_format='iso')
             elif output_format == 'feather':
                 df.to_feather(output_filepath)
             elif output_format == 'parquet':
                 df.to_parquet(output_filepath)
-            
+
             console.print(f"[green]✓ Converted: {filepath.name} -> {output_filepath.name}[/green]")
             converted += 1
-            
+
         except Exception as e:
             console.print(f"[red]✗ Error converting {filepath.name}: {e}[/red]")
             errors += 1
-    
-    console.print(f"\n[green]✓ Conversion complete![/green]")
+
+    console.print("\n[green]✓ Conversion complete![/green]")
     console.print(f"[blue]Converted:[/blue] {converted}, [red]Errors:[/red] {errors}")
 
 
@@ -467,16 +465,16 @@ def trades_to_ohlcv(exchange: str, pair: str, timeframe: str, data_format: str):
     Examples:
         bullseye trades-to-ohlcv --exchange binance --pair BTC/USDT --timeframe 5m
     """
-    console.print(f"[bold green]Converting Trades to OHLCV[/bold green]")
+    console.print("[bold green]Converting Trades to OHLCV[/bold green]")
     console.print(f"[blue]Exchange:[/blue] {exchange}")
     console.print(f"[blue]Pair:[/blue] {pair}")
     console.print(f"[blue]Timeframe:[/blue] {timeframe}")
-    
+
     # Implementation would:
     # 1. Load trade data
     # 2. Resample to target timeframe
     # 3. Calculate OHLCV
     # 4. Save to file
-    
+
     console.print("\n[yellow]Trade to OHLCV conversion - implementation pending[/yellow]")
     console.print("[dim]This command will aggregate trade data into OHLCV format[/dim]")

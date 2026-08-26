@@ -1,10 +1,9 @@
 """
 Test RPC modules
 """
-import pytest
 import sys
 from pathlib import Path
-from unittest.mock import Mock, MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 

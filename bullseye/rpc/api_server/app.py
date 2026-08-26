@@ -91,7 +91,7 @@ def create_app(config: Optional[Dict[str, Any]] = None) -> FastAPI:
         description="REST API for Bullseye Quantitative Trading Framework",
         version="1.0.0"
     )
-    
+
     # Add CORS middleware
     app.add_middleware(
         CORSMiddleware,
@@ -100,13 +100,13 @@ def create_app(config: Optional[Dict[str, Any]] = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    
+
     # Store config
     app.state.config = config or {}
-    
+
     # Store bot instance (to be set externally)
     app.state.bot = None
-    
+
     @app.get("/", tags=["General"])
     async def root():
         """Root endpoint."""
@@ -115,55 +115,55 @@ def create_app(config: Optional[Dict[str, Any]] = None) -> FastAPI:
             "version": "1.0.0",
             "status": "running"
         }
-    
+
     @app.get("/api/v1/status", response_model=BotStatus, tags=["Status"])
     async def get_status(credentials: HTTPAuthorizationCredentials = Depends(security)):
         """Get bot status."""
         bot = app.state.bot
-        
+
         if bot is None:
             raise HTTPException(status_code=503, detail="Bot not initialized")
-        
+
         return BotStatus(
             state=bot.state,
             mode=bot.mode,
             version=bot.version,
             uptime_seconds=bot.uptime_seconds()
         )
-    
+
     @app.get("/api/v1/balance", response_model=List[Balance], tags=["Account"])
     async def get_balance(credentials: HTTPAuthorizationCredentials = Depends(security)):
         """Get account balance."""
         bot = app.state.bot
-        
+
         if bot is None:
             raise HTTPException(status_code=503, detail="Bot not initialized")
-        
+
         balances = bot.get_balances()
         return balances
-    
+
     @app.get("/api/v1/profit", tags=["Account"])
     async def get_profit(credentials: HTTPAuthorizationCredentials = Depends(security)):
         """Get profit statistics."""
         bot = app.state.bot
-        
+
         if bot is None:
             raise HTTPException(status_code=503, detail="Bot not initialized")
-        
+
         profit = bot.get_profit()
         return profit
-    
+
     @app.get("/api/v1/performance", tags=["Account"])
     async def get_performance(credentials: HTTPAuthorizationCredentials = Depends(security)):
         """Get performance metrics."""
         bot = app.state.bot
-        
+
         if bot is None:
             raise HTTPException(status_code=503, detail="Bot not initialized")
-        
+
         performance = bot.get_performance()
         return performance
-    
+
     @app.get("/api/v1/trades", response_model=List[Trade], tags=["Trading"])
     async def list_trades(
         credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -172,13 +172,13 @@ def create_app(config: Optional[Dict[str, Any]] = None) -> FastAPI:
     ):
         """List trades."""
         bot = app.state.bot
-        
+
         if bot is None:
             raise HTTPException(status_code=503, detail="Bot not initialized")
-        
+
         trades = bot.get_trades(status=status, limit=limit)
         return trades
-    
+
     @app.get("/api/v1/trades/{trade_id}", response_model=Trade, tags=["Trading"])
     async def get_trade(
         trade_id: int,
@@ -186,16 +186,16 @@ def create_app(config: Optional[Dict[str, Any]] = None) -> FastAPI:
     ):
         """Get trade by ID."""
         bot = app.state.bot
-        
+
         if bot is None:
             raise HTTPException(status_code=503, detail="Bot not initialized")
-        
+
         trade = bot.get_trade(trade_id)
         if trade is None:
             raise HTTPException(status_code=404, detail="Trade not found")
-        
+
         return trade
-    
+
     @app.post("/api/v1/trade", response_model=Trade, tags=["Trading"])
     async def create_trade(
         request: TradeRequest,
@@ -203,10 +203,10 @@ def create_app(config: Optional[Dict[str, Any]] = None) -> FastAPI:
     ):
         """Create a new trade."""
         bot = app.state.bot
-        
+
         if bot is None:
             raise HTTPException(status_code=503, detail="Bot not initialized")
-        
+
         trade = bot.create_trade(
             pair=request.pair,
             side=request.side,
@@ -215,7 +215,7 @@ def create_app(config: Optional[Dict[str, Any]] = None) -> FastAPI:
             tag=request.tag
         )
         return trade
-    
+
     @app.post("/api/v1/trade/{trade_id}/sell", response_model=Trade, tags=["Trading"])
     async def sell_trade(
         trade_id: int,
@@ -223,16 +223,16 @@ def create_app(config: Optional[Dict[str, Any]] = None) -> FastAPI:
     ):
         """Sell a trade."""
         bot = app.state.bot
-        
+
         if bot is None:
             raise HTTPException(status_code=503, detail="Bot not initialized")
-        
+
         trade = bot.sell_trade(trade_id)
         if trade is None:
             raise HTTPException(status_code=404, detail="Trade not found")
-        
+
         return trade
-    
+
     @app.delete("/api/v1/trade/{trade_id}", tags=["Trading"])
     async def cancel_trade(
         trade_id: int,
@@ -240,16 +240,16 @@ def create_app(config: Optional[Dict[str, Any]] = None) -> FastAPI:
     ):
         """Cancel a trade."""
         bot = app.state.bot
-        
+
         if bot is None:
             raise HTTPException(status_code=503, detail="Bot not initialized")
-        
+
         success = bot.cancel_trade(trade_id)
         if not success:
             raise HTTPException(status_code=404, detail="Trade not found or cannot be cancelled")
-        
+
         return {"message": "Trade cancelled"}
-    
+
     @app.get("/api/v1/config", response_model=Config, tags=["Configuration"])
     async def get_config(credentials: HTTPAuthorizationCredentials = Depends(security)):
         """Get configuration."""
@@ -260,7 +260,7 @@ def create_app(config: Optional[Dict[str, Any]] = None) -> FastAPI:
             dry_run=app.state.config.get('dry_run', True),
             strategy=app.state.config.get('strategy', '')
         )
-    
+
     @app.post("/api/v1/config", response_model=Config, tags=["Configuration"])
     async def update_config(
         config_update: Config,
@@ -269,18 +269,18 @@ def create_app(config: Optional[Dict[str, Any]] = None) -> FastAPI:
         """Update configuration."""
         app.state.config.update(config_update.dict())
         return config_update
-    
+
     @app.get("/api/v1/pairlist", response_model=List[str], tags=["Configuration"])
     async def get_pairlist(credentials: HTTPAuthorizationCredentials = Depends(security)):
         """Get pairlist."""
         bot = app.state.bot
-        
+
         if bot is None:
             raise HTTPException(status_code=503, detail="Bot not initialized")
-        
+
         pairlist = bot.get_pairlist()
         return pairlist
-    
+
     @app.post("/api/v1/backtest", tags=["Backtesting"])
     async def start_backtest(
         request: BacktestRequest,
@@ -288,17 +288,17 @@ def create_app(config: Optional[Dict[str, Any]] = None) -> FastAPI:
     ):
         """Start a backtest."""
         bot = app.state.bot
-        
+
         if bot is None:
             raise HTTPException(status_code=503, detail="Bot not initialized")
-        
+
         backtest_id = bot.start_backtest(
             strategy=request.strategy,
             timerange=request.timerange,
             timeframe=request.timeframe
         )
         return {"backtest_id": backtest_id, "status": "started"}
-    
+
     @app.get("/api/v1/backtest/{backtest_id}", tags=["Backtesting"])
     async def get_backtest_result(
         backtest_id: int,
@@ -306,16 +306,16 @@ def create_app(config: Optional[Dict[str, Any]] = None) -> FastAPI:
     ):
         """Get backtest result."""
         bot = app.state.bot
-        
+
         if bot is None:
             raise HTTPException(status_code=503, detail="Bot not initialized")
-        
+
         result = bot.get_backtest_result(backtest_id)
         if result is None:
             raise HTTPException(status_code=404, detail="Backtest not found")
-        
+
         return result
-    
+
     @app.delete("/api/v1/backtest/{backtest_id}", tags=["Backtesting"])
     async def stop_backtest(
         backtest_id: int,
@@ -323,16 +323,16 @@ def create_app(config: Optional[Dict[str, Any]] = None) -> FastAPI:
     ):
         """Stop a backtest."""
         bot = app.state.bot
-        
+
         if bot is None:
             raise HTTPException(status_code=503, detail="Bot not initialized")
-        
+
         success = bot.stop_backtest(backtest_id)
         if not success:
             raise HTTPException(status_code=404, detail="Backtest not found or cannot be stopped")
-        
+
         return {"message": "Backtest stopped"}
-    
+
     @app.get("/api/v1/logs", tags=["System"])
     async def get_logs(
         credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -340,13 +340,13 @@ def create_app(config: Optional[Dict[str, Any]] = None) -> FastAPI:
     ):
         """Get logs."""
         bot = app.state.bot
-        
+
         if bot is None:
             raise HTTPException(status_code=503, detail="Bot not initialized")
-        
+
         logs = bot.get_logs(limit=limit)
         return {"logs": logs}
-    
+
     @app.get("/api/v1/chart/{pair}", tags=["Data"])
     async def get_chart_data(
         pair: str,
@@ -356,13 +356,13 @@ def create_app(config: Optional[Dict[str, Any]] = None) -> FastAPI:
     ):
         """Get chart data for a pair."""
         bot = app.state.bot
-        
+
         if bot is None:
             raise HTTPException(status_code=503, detail="Bot not initialized")
-        
+
         data = bot.get_chart_data(pair, timeframe=timeframe, limit=limit)
         return {"pair": pair, "timeframe": timeframe, "data": data}
-    
+
     return app
 
 
@@ -376,6 +376,6 @@ def start_api_server(app: FastAPI, host: str = "127.0.0.1", port: int = 8080):
         port: Port to bind to
     """
     import uvicorn
-    
+
     logger.info(f"Starting API server on {host}:{port}")
     uvicorn.run(app, host=host, port=port)

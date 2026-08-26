@@ -3,7 +3,6 @@ Test configuration for Bullseye
 """
 import pytest
 import sys
-import tempfile
 import yaml
 from pathlib import Path
 

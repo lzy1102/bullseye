@@ -4,12 +4,11 @@ Manages all gateways and routes events
 """
 from typing import Dict, List, Optional, Type, Any, TYPE_CHECKING
 import logging
-from datetime import datetime
 
 from .eventengine import EventEngine, EventType
 from .object import (
     ContractData, TickData, OrderData, TradeData,
-    PositionData, AccountData, KlineData
+    PositionData, AccountData
 )
 
 if TYPE_CHECKING:

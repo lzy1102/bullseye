@@ -17,10 +17,10 @@ T+0 Markets (No settlement restriction):
 """
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -446,7 +446,7 @@ class SettlementDetector:
         """
         try:
             import pandas as pd
-            from exchange_calendars import get_calendar
+            from exchange_calendars import get_calendar  # noqa: F401 (availability probe)
         except ImportError:
             logger.debug("exchange_calendars not installed; falling back to weekend-skip")
             return None

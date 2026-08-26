@@ -6,7 +6,7 @@ including data fetching, signal processing, and order execution.
 """
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Type
+from typing import Dict, Optional
 
 import pandas as pd
 

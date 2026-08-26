@@ -22,7 +22,7 @@ from .commands import (
     # Config commands
     create_userdir, new_config, show_config,
     # Data commands
-    download_data, list_data, convert_data, convert_trade_data, trades_to_ohlcv,
+    list_data, convert_data, convert_trade_data, trades_to_ohlcv,
     # List commands
     list_markets, list_pairs, list_hyperoptloss,
     # Backtest commands
@@ -30,8 +30,6 @@ from .commands import (
     # Trade commands
     show_trades, test_pairlist, convert_db,
     # Plot commands
-    plot_dataframe, plot_profit,
-    # Webserver commands
     webserver,
 )
 from .optimize.analysis.lookahead import lookahead_analysis
@@ -121,7 +119,6 @@ def trade(ctx, dry: bool, live: bool, strategy: Optional[str], config: Optional[
 
     # Load and run bot
     from .bot import BullseyeBot
-    from .strategy.interface import IStrategy
     import importlib
     from pathlib import Path
 
@@ -187,7 +184,7 @@ def backtesting(ctx, strategy: str, timeframe: str, timerange: Optional[str],
         bullseye backtesting --strategy MyStrategy --timerange 20240101-20241231
         bullseye backtesting --strategy MyStrategy --initial-balance 10000 --fee 0.001
     """
-    console.print(f"[bold green]Running backtest...[/bold green]")
+    console.print("[bold green]Running backtest...[/bold green]")
     console.print(f"[blue]Strategy:[/blue] {strategy}")
     if timeframe:
         console.print(f"[blue]Timeframe:[/blue] {timeframe}")
@@ -342,7 +339,7 @@ def hyperopt(ctx, strategy: str, epochs: int, spaces: str,
         bullseye hyperopt --strategy MyStrategy --spaces buy roi --epochs 500
         bullseye hyperopt --strategy MyStrategy --min-trades 20 --timerange 20240101-20241231
     """
-    console.print(f"[bold green]Running hyperopt...[/bold green]")
+    console.print("[bold green]Running hyperopt...[/bold green]")
     console.print(f"[blue]Strategy:[/blue] {strategy}")
     console.print(f"[blue]Epochs:[/blue] {epochs}")
     console.print(f"[blue]Spaces:[/blue] {spaces}")
@@ -611,9 +608,9 @@ def new_strategy(ctx, strategy: Optional[str], template: str, timeframe: str, ou
         )
 
         console.print(f"\n[green]✓ Strategy file created: {file_path}[/green]")
-        console.print(f"\n[yellow]Next steps:[/yellow]")
+        console.print("\n[yellow]Next steps:[/yellow]")
         console.print(f"  1. Edit the strategy file: {file_path}")
-        console.print(f"  2. Implement your trading logic")
+        console.print("  2. Implement your trading logic")
         console.print(f"  3. Run backtest: bullseye backtesting --strategy {strategy}")
 
     except FileExistsError as e:
@@ -721,11 +718,11 @@ def init_project(ctx):
         example_config = Path("config.yaml.example")
         if example_config.exists():
             shutil.copy(example_config, config_path)
-            console.print(f"[green]✓ Created: config.yaml (from example)[/green]")
+            console.print("[green]✓ Created: config.yaml (from example)[/green]")
         else:
             console.print("[yellow]  config.yaml.example not found, skipping[/yellow]")
     else:
-        console.print(f"[blue]  Exists: config.yaml[/blue]")
+        console.print("[blue]  Exists: config.yaml[/blue]")
 
     # Create sample strategy
     try:
@@ -738,9 +735,9 @@ def init_project(ctx):
                 template="full",
                 output_dir="user_data/strategies",
             )
-            console.print(f"[green]✓ Created: user_data/strategies/SampleStrategy.py[/green]")
+            console.print("[green]✓ Created: user_data/strategies/SampleStrategy.py[/green]")
         else:
-            console.print(f"[blue]  Exists: user_data/strategies/SampleStrategy.py[/blue]")
+            console.print("[blue]  Exists: user_data/strategies/SampleStrategy.py[/blue]")
     except Exception as e:
         console.print(f"[yellow]  Could not create sample strategy: {e}[/yellow]")
 

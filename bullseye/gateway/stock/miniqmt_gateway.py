@@ -27,8 +27,6 @@ from ...trader.object import (
     ContractData,
     Direction,
     KlineData,
-    Offset,
-    OrderBookData,
     OrderData,
     OrderType,
     PositionData,

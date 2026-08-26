@@ -22,9 +22,11 @@ import logging
 import time
 from datetime import datetime, timedelta
 from functools import wraps
-from typing import Callable, Dict, List, Optional, Any
 
-from .base import BaseDatafeed, DatafeedConfig
+import pandas as pd
+from typing import Dict, List, Optional, Any
+
+from .base import BaseDatafeed
 from bullseye.trader.object.kline import KlineData
 
 logger = logging.getLogger(__name__)
@@ -310,7 +312,6 @@ class TuShareDatafeed(BaseDatafeed):
         interval: str,
     ) -> List[KlineData]:
         """Convert TuShare DataFrame to KlineData list"""
-        import pandas as pd
 
         if df is None or df.empty:
             return []
@@ -705,6 +706,3 @@ class TuShareDatafeed(BaseDatafeed):
             logger.error(f"Error getting limit price for {trade_date}: {e}")
             return None
 
-
-# Import pandas for type hints
-import pandas as pd

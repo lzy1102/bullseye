@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from bullseye.gateway.base import BaseGateway
-from bullseye.trader.eventengine import EventEngine, EventType
+from bullseye.trader.eventengine import EventEngine
 from bullseye.trader.object.account import AccountData
 from bullseye.trader.object.contract import ContractData
 from bullseye.trader.object.kline import KlineData

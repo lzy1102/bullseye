@@ -3,7 +3,7 @@ Tick Data - Market tick data structure
 """
 from datetime import datetime
 from typing import Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass

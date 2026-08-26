@@ -135,7 +135,7 @@ class InsufficientFundsError(OrderError):
     """Raised when there are insufficient funds for an order."""
 
     def __init__(self, required: float = 0, available: float = 0, currency: str = ""):
-        msg = f"Insufficient funds"
+        msg = "Insufficient funds"
         if currency:
             msg += f" ({currency})"
         msg += f": required {required}, available {available}"

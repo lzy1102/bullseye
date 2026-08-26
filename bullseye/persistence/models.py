@@ -5,7 +5,7 @@ Compatible with Freqtrade database schema.
 """
 from sqlalchemy import (
     Column, Integer, String, Float, DateTime, Boolean,
-    Numeric, Enum as SQLEnum, Text, Index
+    Text
 )
 from sqlalchemy.orm import declarative_base
 from datetime import datetime, timezone

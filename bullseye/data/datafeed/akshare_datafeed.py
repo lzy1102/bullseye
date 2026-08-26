@@ -18,9 +18,9 @@ import logging
 import time
 from datetime import datetime, timedelta
 from functools import wraps
-from typing import Callable, Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any
 
-from .base import BaseDatafeed, DatafeedConfig
+from .base import BaseDatafeed
 from bullseye.trader.object.kline import KlineData
 
 logger = logging.getLogger(__name__)

@@ -1,14 +1,12 @@
 """
 Test API Server module
 """
-import pytest
-from unittest.mock import Mock, MagicMock
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from bullseye.rpc.api_server import create_app, BotStatus, Balance, Trade, TradeRequest
+from bullseye.rpc.api_server import create_app
 
 
 class MockBot:

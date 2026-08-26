@@ -1,12 +1,11 @@
 """
 Unit tests for the Wallets balance management.
 """
-import math
 
 import pytest
 
 from bullseye.configuration.config import Config
-from bullseye.wallets.wallets import TradeInfo, WalletBalance, Wallets
+from bullseye.wallets.wallets import TradeInfo, Wallets
 
 
 @pytest.fixture

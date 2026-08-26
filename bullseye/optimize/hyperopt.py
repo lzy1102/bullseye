@@ -8,15 +8,14 @@ import json
 import logging
 import random
 import time
-from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Type
 
 from bullseye.backtesting.engine import BacktestEngine
 from bullseye.backtesting.result import BacktestResult
 from bullseye.configuration.config import Config
-from bullseye.exceptions import HyperoptError, StrategyLoadError
+from bullseye.exceptions import HyperoptError
 from bullseye.strategy.interface import (
     IStrategy,
     BooleanParameter,

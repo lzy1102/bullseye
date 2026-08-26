@@ -5,7 +5,7 @@ Provides Telegram bot functionality for notifications and control.
 """
 import asyncio
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any
 from datetime import datetime
 from dataclasses import dataclass
 
@@ -19,7 +19,7 @@ class TelegramConfig:
     token: str = ""
     chat_id: str = ""
     notification_settings: Dict[str, str] = None
-    
+
     def __post_init__(self):
         if self.notification_settings is None:
             self.notification_settings = {
@@ -46,15 +46,15 @@ class TelegramBot:
     - Interactive commands
     - Custom messages from strategy
     """
-    
+
     def __init__(self, config: TelegramConfig):
         self.config = config
         self.bot = None
         self._initialized = False
-        
+
         if config.enabled and config.token:
             self._init_bot()
-    
+
     def _init_bot(self):
         """Initialize the Telegram bot."""
         try:
@@ -66,7 +66,7 @@ class TelegramBot:
             logger.error("python-telegram-bot not installed. Install with: pip install python-telegram-bot")
         except Exception as e:
             logger.error(f"Failed to initialize Telegram bot: {e}")
-    
+
     def send_message(self, message: str, parse_mode: str = 'HTML') -> bool:
         """
         Send a message to Telegram.
@@ -80,7 +80,7 @@ class TelegramBot:
         """
         if not self._initialized or not self.config.chat_id:
             return False
-        
+
         try:
             coroutine = self.bot.send_message(
                 chat_id=self.config.chat_id,
@@ -107,7 +107,7 @@ class TelegramBot:
 
         task = asyncio.ensure_future(coroutine)
         return task
-    
+
     def notify_entry(self, trade: Dict[str, Any]) -> bool:
         """
         Notify about trade entry.
@@ -117,12 +117,12 @@ class TelegramBot:
         """
         if not self._should_notify('entry'):
             return False
-        
+
         pair = trade.get('pair', 'Unknown')
         amount = trade.get('amount', 0)
         rate = trade.get('open_rate', 0)
         tag = trade.get('entry_tag', '')
-        
+
         message = f"""
 <b>🟢 Entry Signal</b>
 
@@ -133,7 +133,7 @@ class TelegramBot:
 <b>Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
         return self.send_message(message)
-    
+
     def notify_exit(self, trade: Dict[str, Any], profit: float, profit_percent: float) -> bool:
         """
         Notify about trade exit.
@@ -145,11 +145,11 @@ class TelegramBot:
         """
         if not self._should_notify('exit'):
             return False
-        
+
         pair = trade.get('pair', 'Unknown')
         tag = trade.get('exit_tag', '')
         emoji = "🟢" if profit > 0 else "🔴"
-        
+
         message = f"""
 <b>{emoji} Exit Signal</b>
 
@@ -159,7 +159,7 @@ class TelegramBot:
 <b>Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
         return self.send_message(message)
-    
+
     def notify_startup(self, version: str, mode: str) -> bool:
         """
         Notify about bot startup.
@@ -170,9 +170,9 @@ class TelegramBot:
         """
         if not self._should_notify('startup'):
             return False
-        
+
         emoji = "🟡" if mode == "dry" else "🟢"
-        
+
         message = f"""
 <b>{emoji} Bullseye Started</b>
 
@@ -181,7 +181,7 @@ class TelegramBot:
 <b>Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
         return self.send_message(message)
-    
+
     def notify_status(self, status: Dict[str, Any]) -> bool:
         """
         Send status update.
@@ -191,11 +191,11 @@ class TelegramBot:
         """
         if not self._should_notify('status'):
             return False
-        
+
         open_trades = status.get('open_trades', 0)
         profit = status.get('profit', 0)
         balance = status.get('balance', 0)
-        
+
         message = f"""
 <b>📊 Status Update</b>
 
@@ -205,7 +205,7 @@ class TelegramBot:
 <b>Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
         return self.send_message(message)
-    
+
     def notify_protection_trigger(self, protection: str, until: datetime) -> bool:
         """
         Notify about protection trigger.
@@ -216,7 +216,7 @@ class TelegramBot:
         """
         if not self._should_notify('protection_trigger'):
             return False
-        
+
         message = f"""
 <b>🛡️ Protection Triggered</b>
 
@@ -224,7 +224,7 @@ class TelegramBot:
 <b>Active Until:</b> {until.strftime('%Y-%m-%d %H:%M:%S')}
 """
         return self.send_message(message)
-    
+
     def send_strategy_message(self, message: str) -> bool:
         """
         Send a custom message from strategy.
@@ -234,22 +234,22 @@ class TelegramBot:
         """
         if not self._should_notify('strategy_msg'):
             return False
-        
+
         formatted_message = f"""
 <b>📢 Strategy Message</b>
 
 {message}
 """
         return self.send_message(formatted_message)
-    
+
     def _should_notify(self, notification_type: str) -> bool:
         """Check if notification type is enabled."""
         if not self._initialized:
             return False
-        
+
         setting = self.config.notification_settings.get(notification_type, 'off')
         return setting.lower() in ('on', 'true', 'yes', '1')
-    
+
     def start_polling(self):
         """Start command polling (for interactive commands)."""
         # This would start a separate thread to handle commands
@@ -263,7 +263,7 @@ class TelegramRPC:
     
     Handles all Telegram-related RPC functionality.
     """
-    
+
     def __init__(self, config: Dict[str, Any]):
         self.config = TelegramConfig(
             enabled=config.get('enabled', False),
@@ -272,27 +272,27 @@ class TelegramRPC:
             notification_settings=config.get('notification_settings', {})
         )
         self.bot = TelegramBot(self.config)
-    
+
     def startup(self, version: str, mode: str):
         """Send startup notification."""
         self.bot.notify_startup(version, mode)
-    
+
     def entry(self, trade: Dict[str, Any]):
         """Send entry notification."""
         self.bot.notify_entry(trade)
-    
+
     def exit(self, trade: Dict[str, Any], profit: float, profit_percent: float):
         """Send exit notification."""
         self.bot.notify_exit(trade, profit, profit_percent)
-    
+
     def status(self, status: Dict[str, Any]):
         """Send status update."""
         self.bot.notify_status(status)
-    
+
     def protection_trigger(self, protection: str, until: datetime):
         """Send protection trigger notification."""
         self.bot.notify_protection_trigger(protection, until)
-    
+
     def strategy_msg(self, message: str):
         """Send strategy message."""
         self.bot.send_strategy_message(message)

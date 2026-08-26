@@ -3,10 +3,7 @@ Configuration Commands for Bullseye
 
 Commands for managing configuration and user directories.
 """
-import os
 import sys
-import json
-import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -176,9 +173,9 @@ def create_userdir(userdir: Optional[str], overwrite: bool):
     """
     userdir = userdir or "user_data"
     userdir_path = Path(userdir)
-    
+
     console.print(f"[green]Creating user directory structure at: {userdir_path.absolute()}[/green]\n")
-    
+
     # Define directory structure
     directories = [
         "",
@@ -191,10 +188,10 @@ def create_userdir(userdir: Optional[str], overwrite: bool):
         "plot",
         "strategies",
     ]
-    
+
     created_count = 0
     existing_count = 0
-    
+
     for dir_name in directories:
         dir_path = userdir_path / dir_name
         if dir_path.exists():
@@ -204,15 +201,15 @@ def create_userdir(userdir: Optional[str], overwrite: bool):
             dir_path.mkdir(parents=True, exist_ok=True)
             created_count += 1
             console.print(f"[green]✓ Created: {dir_path}[/green]")
-    
+
     # Create .gitkeep files
     for dir_name in directories:
         if dir_name:  # Skip root
             gitkeep = userdir_path / dir_name / ".gitkeep"
             if not gitkeep.exists():
                 gitkeep.touch()
-    
-    console.print(f"\n[green]✓ Directory structure created successfully![/green]")
+
+    console.print("\n[green]✓ Directory structure created successfully![/green]")
     console.print(f"  Created: {created_count}, Existing: {existing_count}")
 
 
@@ -234,21 +231,21 @@ def new_config(config: Optional[str], market_type: Optional[str], exchange: Opti
         bullseye new-config --market-type crypto --exchange binance
     """
     config_path = Path(config or "config.yaml")
-    
+
     if config_path.exists() and not non_interactive:
         if not Confirm.ask(f"[yellow]Configuration file '{config_path}' already exists. Overwrite?[/yellow]"):
             console.print("[blue]Cancelled.[/blue]")
             return
-    
+
     console.print("[bold green]Creating new Bullseye configuration[/bold green]\n")
-    
+
     if non_interactive:
         # Use default configuration
         config_content = DEFAULT_CONFIG
     else:
         # Interactive configuration
         config_data = {}
-        
+
         # Market type selection
         if not market_type:
             market_type = Prompt.ask(
@@ -257,7 +254,7 @@ def new_config(config: Optional[str], market_type: Optional[str], exchange: Opti
                 default="crypto"
             )
         config_data['market_type'] = market_type
-        
+
         # Exchange configuration
         if market_type == "crypto":
             if not exchange:
@@ -267,35 +264,35 @@ def new_config(config: Optional[str], market_type: Optional[str], exchange: Opti
                     default="binance"
                 )
             config_data['exchange_name'] = exchange
-            
+
             # Dry run mode
             dry_run = Confirm.ask("Enable dry-run mode (paper trading)?", default=True)
             config_data['dry_run'] = dry_run
-            
+
             # Stake amount
             stake_amount = Prompt.ask("Stake amount per trade", default="100")
             config_data['stake_amount'] = stake_amount
-            
+
             # Max open trades
             max_trades = Prompt.ask("Maximum open trades", default="5")
             config_data['max_open_trades'] = int(max_trades)
-            
+
             # Telegram
             use_telegram = Confirm.ask("Enable Telegram notifications?", default=False)
             if use_telegram:
                 console.print("[yellow]Please configure Telegram settings in the generated config file.[/yellow]")
-        
+
         elif market_type == "stock":
             console.print("[yellow]Stock market configuration - please edit the config file for gateway details.[/yellow]")
             config_data['exchange_name'] = "xtp"
-        
+
         elif market_type == "future":
             console.print("[yellow]Futures market configuration - please edit the config file for CTP details.[/yellow]")
             config_data['exchange_name'] = "ctp"
-        
+
         # Generate config content
         config_content = generate_config_content(config_data)
-    
+
     # Write configuration file
     try:
         with open(config_path, 'w', encoding='utf-8') as f:
@@ -304,7 +301,7 @@ def new_config(config: Optional[str], market_type: Optional[str], exchange: Opti
     except Exception as e:
         console.print(f"\n[red]Error creating configuration file: {e}[/red]")
         sys.exit(1)
-    
+
     console.print("\n[yellow]Next steps:[/yellow]")
     console.print(f"  1. Edit the configuration: {config_path}")
     console.print("  2. Set your API keys and secrets")
@@ -314,24 +311,24 @@ def new_config(config: Optional[str], market_type: Optional[str], exchange: Opti
 def generate_config_content(config_data: dict) -> str:
     """Generate configuration content based on user input."""
     content = DEFAULT_CONFIG
-    
+
     # Update with user settings
     if 'market_type' in config_data:
         content = content.replace("market_type: auto", f"market_type: {config_data['market_type']}")
-    
+
     if 'exchange_name' in config_data:
         content = content.replace("name: binance", f"name: {config_data['exchange_name']}")
-    
+
     if 'dry_run' in config_data:
         dry_run_str = "true" if config_data['dry_run'] else "false"
         content = content.replace("dry_run: true", f"dry_run: {dry_run_str}")
-    
+
     if 'stake_amount' in config_data:
         content = content.replace("stake_amount: 100", f"stake_amount: {config_data['stake_amount']}")
-    
+
     if 'max_open_trades' in config_data:
         content = content.replace("max_open_trades: 5", f"max_open_trades: {config_data['max_open_trades']}")
-    
+
     return content
 
 
@@ -352,7 +349,7 @@ def show_config(config: Optional[str], show_defaults: bool, print_json: bool):
         bullseye show-config --print-json
     """
     config_path = config or "config.yaml"
-    
+
     try:
         from ..configuration import Config
         config_obj = Config(config_path)
@@ -362,20 +359,20 @@ def show_config(config: Optional[str], show_defaults: bool, print_json: bool):
     except Exception as e:
         console.print(f"[red]Error loading configuration: {e}[/red]")
         sys.exit(1)
-    
+
     if print_json:
         # Output as JSON
         import json
         config_dict = config_obj.to_dict() if hasattr(config_obj, 'to_dict') else vars(config_obj)
         console.print(json.dumps(config_dict, indent=2, default=str))
         return
-    
+
     console.print("[bold green]Bullseye Configuration[/bold green]\n")
-    
+
     table = Table(show_header=True, header_style="bold magenta")
     table.add_column("Setting", style="cyan")
     table.add_column("Value", style="green")
-    
+
     # Basic settings
     table.add_row("Market Type", str(config_obj.get('market_type', 'auto')))
     table.add_row("Exchange", str(config_obj.get('exchange_name', 'N/A')))
@@ -384,21 +381,21 @@ def show_config(config: Optional[str], show_defaults: bool, print_json: bool):
     table.add_row("Max Open Trades", str(config_obj.get('max_open_trades', 5)))
     table.add_row("Stake Amount", str(config_obj.get('stake_amount', 'unlimited')))
     table.add_row("Stake Currency", str(config_obj.get('stake_currency', 'USDT')))
-    
+
     # Database
     db_url = config_obj.get('db_url', 'sqlite:///user_data/tradesv3.sqlite')
     table.add_row("Database", db_url)
-    
+
     # Telegram
     telegram_enabled = config_obj.get('telegram.enabled', False)
     table.add_row("Telegram", "Enabled" if telegram_enabled else "Disabled")
-    
+
     # API Server
     api_enabled = config_obj.get('api_server.enabled', False)
     table.add_row("API Server", "Enabled" if api_enabled else "Disabled")
-    
+
     console.print(table)
-    
+
     if show_defaults:
         console.print("\n[yellow]Full configuration with defaults:[/yellow]")
         # This would show the complete merged configuration

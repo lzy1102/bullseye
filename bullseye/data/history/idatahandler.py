@@ -14,7 +14,7 @@ class IDataHandler(ABC):
     
     All data format handlers must implement this interface.
     """
-    
+
     @abstractmethod
     def ohlcv_get(self, pair: str, timeframe: str) -> Optional[pd.DataFrame]:
         """
@@ -28,7 +28,7 @@ class IDataHandler(ABC):
             DataFrame with OHLCV data or None if not found
         """
         pass
-    
+
     @abstractmethod
     def ohlcv_store(self, pair: str, timeframe: str, data: pd.DataFrame) -> None:
         """
@@ -40,7 +40,7 @@ class IDataHandler(ABC):
             data: DataFrame with OHLCV data
         """
         pass
-    
+
     @abstractmethod
     def trades_get(self, pair: str) -> Optional[pd.DataFrame]:
         """
@@ -53,7 +53,7 @@ class IDataHandler(ABC):
             DataFrame with trade data or None if not found
         """
         pass
-    
+
     @abstractmethod
     def trades_store(self, pair: str, data: pd.DataFrame) -> None:
         """
@@ -64,7 +64,7 @@ class IDataHandler(ABC):
             data: DataFrame with trade data
         """
         pass
-    
+
     def ohlcv_exists(self, pair: str, timeframe: str) -> bool:
         """
         Check if OHLCV data exists for a pair and timeframe.
@@ -77,7 +77,7 @@ class IDataHandler(ABC):
             True if data exists, False otherwise
         """
         return self.ohlcv_get(pair, timeframe) is not None
-    
+
     def trades_exists(self, pair: str) -> bool:
         """
         Check if trade data exists for a pair.

@@ -28,15 +28,15 @@ def webserver(host: str, port: int, config: Optional[str], reload: bool):
         bullseye webserver --host 0.0.0.0 --port 8000
         bullseye webserver --config config.yaml
     """
-    console.print(f"[bold green]Starting Bullseye API Server[/bold green]")
+    console.print("[bold green]Starting Bullseye API Server[/bold green]")
     console.print(f"[blue]Host:[/blue] {host}")
     console.print(f"[blue]Port:[/blue] {port}")
     console.print(f"[blue]Config:[/blue] {config or 'Default'}")
     console.print(f"[blue]Auto-reload:[/blue] {reload}\n")
-    
+
     try:
         from ..rpc.api_server import create_app, start_api_server
-        
+
         # Load config
         config_dict = None
         if config:
@@ -46,13 +46,13 @@ def webserver(host: str, port: int, config: Optional[str], reload: bool):
                     config_dict = yaml.safe_load(f)
             except Exception as e:
                 console.print(f"[yellow]Warning: Could not load config: {e}[/yellow]")
-        
+
         # Create app
         app = create_app(config_dict)
-        
+
         # Start server
         start_api_server(app, host=host, port=port)
-        
+
     except ImportError as e:
         console.print(f"[red]Error: {e}[/red]")
         console.print("[yellow]Please install required dependencies:[/yellow]")

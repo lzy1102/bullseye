@@ -16,8 +16,7 @@ except ImportError:
 from ..base import BaseGateway, GatewayType
 from ...trader.eventengine import EventType
 from ...trader.object import (
-    ContractData, TickData, OrderData, TradeData,
-    PositionData, AccountData, KlineData, OrderBookData,
+    ContractData, TickData, OrderData, PositionData, AccountData, KlineData, OrderBookData,
     OrderType, Direction, Status, ProductClass
 )
 

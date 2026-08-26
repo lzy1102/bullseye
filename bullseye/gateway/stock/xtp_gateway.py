@@ -9,9 +9,7 @@ import logging
 from ..base import BaseGateway, GatewayType
 from ...trader.eventengine import EventType
 from ...trader.object import (
-    ContractData, TickData, OrderData, TradeData,
-    PositionData, AccountData, KlineData,
-    OrderType, Direction, Offset, Status, ProductClass
+    ContractData, TickData, OrderData, PositionData, AccountData, KlineData
 )
 
 logger = logging.getLogger(__name__)
