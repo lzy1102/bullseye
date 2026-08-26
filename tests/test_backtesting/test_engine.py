@@ -419,6 +419,64 @@ class TestSettlementRestriction:
             assert trade.trade_duration == pytest.approx(1.0)
             assert trade.exit_reason == "exit_signal"
 
+    def test_precomputed_signals_golden_sequence(self):
+        """Regression: signal precomputation must reproduce exact trade sequence.
+
+        Golden baseline captured before the vectorized-signal refactor;
+        guards against behavior drift when reading precomputed columns.
+        """
+        periods = 60
+        dates = pd.date_range(start=datetime(2024, 1, 1), periods=periods, freq="1h")
+        prices = []
+        p = 100.0
+        for i in range(periods):
+            if i % 10 == 9:
+                p -= 6.0
+            else:
+                p += 0.5
+            prices.append(round(p, 2))
+        data = {"BTC/USDT": pd.DataFrame({
+            "date": dates, "open": prices,
+            "high": [x + 0.3 for x in prices], "low": [x - 0.3 for x in prices],
+            "close": prices, "volume": [1000.0] * periods,
+        })}
+
+        class MixedExitStrategy(IStrategy):
+            timeframe = "1h"
+            startup_candle_count = 5
+            minimal_roi = {"0": 0.03}
+            stoploss = -0.05
+
+            def populate_indicators(self, dataframe, metadata):
+                return dataframe
+
+            def populate_entry_trend(self, dataframe, metadata):
+                dataframe["enter_long"] = 1
+                return dataframe
+
+            def populate_exit_trend(self, dataframe, metadata):
+                dataframe["exit_long"] = 0
+                return dataframe
+
+        trades = run_flat_backtest(MixedExitStrategy, data)
+
+        golden = [
+            ("2024-01-01 05:00:00", "2024-01-01 19:00:00", 103.0, 97.85, "stoploss", -5.195),
+            ("2024-01-01 19:00:00", "2024-01-02 01:00:00", 97.0, 100.0, "roi_0m", 2.889691),
+            ("2024-01-02 01:00:00", "2024-01-02 15:00:00", 100.0, 95.0, "stoploss", -5.195),
+            ("2024-01-02 15:00:00", "2024-01-02 21:00:00", 94.0, 97.0, "roi_0m", 2.988298),
+            ("2024-01-02 21:00:00", "2024-01-03 11:00:00", 97.0, 92.15, "stoploss", -5.195),
+            ("2024-01-03 11:00:00", "2024-01-03 11:00:00", 91.0, 91.0, "force_exit", -0.2),
+        ]
+        assert len(trades) == len(golden)
+        for trade, (entry, exit_, open_, close_, reason, profit) in zip(trades, golden):
+            assert str(trade.entry_date) == entry
+            assert str(trade.exit_date) == exit_
+            assert trade.open_rate == pytest.approx(open_)
+            assert trade.close_rate == pytest.approx(close_)
+            assert trade.exit_reason == reason
+            assert trade.profit_abs == pytest.approx(profit, abs=1e-6)
+
 
     def test_result_save_and_load(self, tmp_path):
         result = BacktestResult(

@@ -38,6 +38,26 @@ from .result import BacktestResult, BacktestTrade
 logger = logging.getLogger(__name__)
 
 
+class _ArrayRow:
+    """Lightweight row accessor over per-column numpy arrays.
+
+    Avoids pandas ``DataFrame.iloc[idx]`` Series construction in the hot
+    backtesting loop (mixed-dtype row extraction is very slow).
+    """
+
+    __slots__ = ("_arrays", "_idx")
+
+    def __init__(self, arrays: Dict[str, Any], idx: int):
+        self._arrays = arrays
+        self._idx = idx
+
+    def get(self, column: str, default: Any = 0) -> Any:
+        arr = self._arrays.get(column)
+        if arr is None:
+            return default
+        return arr[self._idx]
+
+
 class BacktestDataProvider:
     """
     DataProvider for backtesting mode.
@@ -412,8 +432,8 @@ class BacktestEngine:
         """
         Main backtesting loop.
 
-        Iterates through all candles chronologically, running strategy
-        analysis and executing trades.
+        Iterates through all candles chronologically, executing trades based
+        on precomputed strategy signals (computed once per pair, freqtrade-style).
         """
         # Build unified timeline
         all_dates = set()
@@ -426,11 +446,32 @@ class BacktestEngine:
             return []
 
         # Build date-to-index mapping for each pair
-        pair_date_index: Dict[str, Dict[datetime, int]] = {}
+        pair_date_index: Dict[str, Dict[datetime, int]] = {
+            pair: dict(zip(df["date"], df.index))
+            for pair, df in data.items()
+        }
+
+        # Precompute strategy signals once per pair (vectorized upfront).
+        # Indicators must only depend on past data (rolling/EMA/shift etc.),
+        # matching freqtrade semantics; non-causal operations would differ.
+        precomputed_signals: Dict[str, Any] = {}
         for pair, df in data.items():
-            pair_date_index[pair] = {}
-            for idx, row in df.iterrows():
-                pair_date_index[pair][row["date"]] = idx
+            metadata = {"pair": pair}
+            signal_df = strategy.populate_indicators(df.copy(), metadata)
+            signal_df = strategy.populate_entry_trend(signal_df, metadata)
+            signal_df = strategy.populate_exit_trend(signal_df, metadata)
+            precomputed_signals[pair] = signal_df
+
+        # Extract per-column numpy arrays once: O(1) scalar reads in the loop
+        price_arrays: Dict[str, Dict[str, Any]] = {}
+        signal_arrays: Dict[str, Dict[str, Any]] = {}
+        for pair, df in data.items():
+            price_arrays[pair] = {
+                col: df[col].to_numpy() for col in ("open", "high", "low", "close")
+            }
+            signal_arrays[pair] = {
+                col: s[col].to_numpy() for col in s.columns
+            } if (s := precomputed_signals.get(pair)) is not None else {}
 
         # Track open trades
         open_trades: Dict[str, LocalTrade] = {}
@@ -460,12 +501,12 @@ class BacktestEngine:
                 # Update data provider index
                 bt_dp.set_current_index(pair, idx + 1)
 
-                # Get dataframe up to current candle
-                df = data[pair]
-                current_row = df.iloc[idx]
-                current_rate = current_row["close"]
-                current_high = current_row["high"]
-                current_low = current_row["low"]
+                # Scalar reads from precomputed column arrays
+                prices = price_arrays[pair]
+                current_rate = prices["close"][idx]
+                current_high = prices["high"][idx]
+                current_low = prices["low"][idx]
+                signal_row = _ArrayRow(signal_arrays[pair], idx)
 
                 # === Check exits for open trades ===
                 if pair in open_trades:
@@ -473,6 +514,7 @@ class BacktestEngine:
                     self._check_exit(
                         trade=trade,
                         strategy=strategy,
+                        signal_row=signal_row,
                         current_rate=current_rate,
                         current_high=current_high,
                         current_low=current_low,
@@ -488,7 +530,7 @@ class BacktestEngine:
                     self._check_entry(
                         pair=pair,
                         strategy=strategy,
-                        bt_dp=bt_dp,
+                        signal_row=signal_row,
                         current_rate=current_rate,
                         current_date=current_date,
                         timeframe=timeframe,
@@ -526,7 +568,7 @@ class BacktestEngine:
         self,
         pair: str,
         strategy: IStrategy,
-        bt_dp: BacktestDataProvider,
+        signal_row,
         current_rate: float,
         current_date: datetime,
         timeframe: str,
@@ -535,27 +577,15 @@ class BacktestEngine:
         open_trades: Dict[str, LocalTrade],
         stake_amount: float,
     ) -> None:
-        """Check for entry signals and execute trades."""
+        """Check for entry signals and execute trades.
+
+        Signals come from the precomputed per-pair dataframe (see
+        _run_backtest_loop); no indicator recomputation happens here.
+        """
         try:
-            df = bt_dp.get_dataframe_up_to(pair, bt_dp._current_index.get(pair, 0))
-            if df.empty:
-                return
-
-            metadata = {"pair": pair}
-
-            # Run strategy analysis
-            df = strategy.populate_indicators(df, metadata)
-            df = strategy.populate_entry_trend(df, metadata)
-            df = strategy.populate_exit_trend(df, metadata)
-
-            if df.empty:
-                return
-
-            latest = df.iloc[-1]
-
             # Check for long entry
-            enter_long = latest.get("enter_long", 0)
-            enter_tag = latest.get("enter_tag", None)
+            enter_long = signal_row.get("enter_long", 0)
+            enter_tag = signal_row.get("enter_tag", None)
 
             if enter_long == 1:
                 # Confirm entry
@@ -641,7 +671,7 @@ class BacktestEngine:
 
             # Check for short entry
             if getattr(strategy, 'can_short', False):
-                enter_short = latest.get("enter_short", 0)
+                enter_short = signal_row.get("enter_short", 0)
                 if enter_short == 1:
                     # Similar to long but with is_short=True
                     try:
@@ -707,6 +737,7 @@ class BacktestEngine:
         self,
         trade: LocalTrade,
         strategy: IStrategy,
+        signal_row,
         current_rate: float,
         current_high: float,
         current_low: float,
@@ -716,9 +747,17 @@ class BacktestEngine:
         open_trades: Dict[str, LocalTrade],
         closed_bt_trades: List[BacktestTrade],
     ) -> None:
-        """Check exit conditions for an open trade."""
+        """Check exit conditions for an open trade.
+
+        Signal columns come from the precomputed per-pair dataframe; only
+        user callbacks (custom_exit / confirm_trade_exit) run per candle.
+        """
         # Update rate tracking
         trade.update_rate(current_rate)
+
+        # Profit ratio at current rate - identical for trailing/ROI/custom
+        # checks below, so compute once.
+        profit_ratio = trade.calc_profit_ratio(current_rate)
 
         # 0. Enforce T+1/T+N settlement: the position cannot be sold before
         # its settlement date (compared against simulated time, NOT wall clock)
@@ -766,8 +805,6 @@ class BacktestEngine:
             trailing_stop_positive_offset = getattr(strategy, 'trailing_stop_positive_offset', 0.0)
             trailing_only_offset = getattr(strategy, 'trailing_only_offset_is_reached', False)
 
-            profit_ratio = trade.calc_profit_ratio(current_rate)
-
             if not trailing_only_offset or profit_ratio >= trailing_stop_positive_offset:
                 if trade.is_short:
                     new_stop = trade.min_rate * (1 + trailing_stop_positive)
@@ -813,7 +850,6 @@ class BacktestEngine:
         minimal_roi = getattr(strategy, 'minimal_roi', {})
         if minimal_roi:
             trade_duration = (current_date - trade.open_date).total_seconds() / 60
-            profit_ratio = trade.calc_profit_ratio(current_rate)
 
             for minutes_str, roi_value in sorted(
                 minimal_roi.items(),
@@ -839,13 +875,12 @@ class BacktestEngine:
 
         # 4. Check custom exit
         try:
-            current_profit = trade.calc_profit_ratio(current_rate)
             exit_reason = strategy.custom_exit(
                 pair=trade.pair,
                 trade=trade,
                 current_time=current_date,
                 current_rate=current_rate,
-                current_profit=current_profit,
+                current_profit=profit_ratio,
                 exit_reason=None,
             )
             if exit_reason:
@@ -863,59 +898,45 @@ class BacktestEngine:
         except Exception:
             pass
 
-        # 5. Check exit signal from strategy
-        # We need to re-analyze to get exit signals
-        try:
-            if hasattr(strategy, 'dp') and strategy.dp:
-                df = strategy.dp.get_dataframe_up_to(trade.pair, strategy.dp._current_index.get(trade.pair, 0))
-                if not df.empty:
-                    metadata = {"pair": trade.pair}
-                    df = strategy.populate_indicators(df, metadata)
-                    df = strategy.populate_entry_trend(df, metadata)
-                    df = strategy.populate_exit_trend(df, metadata)
+        # 5. Check exit signal from strategy (precomputed columns)
+        exit_long = signal_row.get("exit_long", 0)
+        exit_short = signal_row.get("exit_short", 0)
+        exit_tag = signal_row.get("exit_tag", None)
 
-                    if not df.empty:
-                        latest = df.iloc[-1]
-                        exit_long = latest.get("exit_long", 0)
-                        exit_short = latest.get("exit_short", 0)
-                        exit_tag = latest.get("exit_tag", None)
+        should_exit = False
+        if trade.is_short and exit_short == 1:
+            should_exit = True
+        elif not trade.is_short and exit_long == 1:
+            should_exit = True
 
-                        should_exit = False
-                        if trade.is_short and exit_short == 1:
-                            should_exit = True
-                        elif not trade.is_short and exit_long == 1:
-                            should_exit = True
+        if should_exit:
+            # Confirm exit
+            try:
+                confirmed = strategy.confirm_trade_exit(
+                    pair=trade.pair,
+                    trade=trade,
+                    order_type="market",
+                    amount=trade.amount,
+                    rate=current_rate,
+                    time_in_force="GTC",
+                    exit_reason="exit_signal",
+                    current_time=current_date,
+                )
+                if not confirmed:
+                    return
+            except Exception:
+                pass
 
-                        if should_exit:
-                            # Confirm exit
-                            try:
-                                confirmed = strategy.confirm_trade_exit(
-                                    pair=trade.pair,
-                                    trade=trade,
-                                    order_type="market",
-                                    amount=trade.amount,
-                                    rate=current_rate,
-                                    time_in_force="GTC",
-                                    exit_reason="exit_signal",
-                                    current_time=current_date,
-                                )
-                                if not confirmed:
-                                    return
-                            except Exception:
-                                pass
-
-                            self._close_trade(
-                                trade=trade,
-                                rate=current_rate,
-                                exit_reason=exit_tag or "exit_signal",
-                                current_date=current_date,
-                                position_manager=position_manager,
-                                wallets=wallets,
-                                open_trades=open_trades,
-                                closed_bt_trades=closed_bt_trades,
-                            )
-        except Exception:
-            pass
+            self._close_trade(
+                trade=trade,
+                rate=current_rate,
+                exit_reason=exit_tag or "exit_signal",
+                current_date=current_date,
+                position_manager=position_manager,
+                wallets=wallets,
+                open_trades=open_trades,
+                closed_bt_trades=closed_bt_trades,
+            )
 
     def _close_trade(
         self,
