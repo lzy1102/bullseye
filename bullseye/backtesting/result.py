@@ -2,7 +2,7 @@
 Backtest Result - Data structures for backtesting results.
 """
 import json
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -121,11 +121,15 @@ class BacktestResult:
         trades: Optional[List[BacktestTrade]] = None,
         metrics: Optional[BacktestMetrics] = None,
         config: Optional[Dict[str, Any]] = None,
+        equity_curve: Optional[List[tuple]] = None,
     ):
         self.strategy_name = strategy_name
         self.trades = trades or []
         self.metrics = metrics or BacktestMetrics()
         self.config = config or {}
+        # Mark-to-market account value sampled per timestamp:
+        # list of (datetime, equity_value)
+        self.equity_curve: List[tuple] = equity_curve or []
         self.created_at = datetime.now()
 
     def calculate_metrics(self, initial_balance: float = 1000.0) -> None:
@@ -156,7 +160,12 @@ class BacktestResult:
 
         sharpe = self._calc_sharpe(profits)
         sortino = self._calc_sortino(profits)
-        max_dd, max_dd_abs = self._calc_max_drawdown(profits, initial_balance)
+        if self.equity_curve:
+            # Mark-to-market drawdown from the equity curve captures
+            # intra-trade dips that closed-trade accounting misses.
+            max_dd, max_dd_abs = self._calc_max_drawdown_curve()
+        else:
+            max_dd, max_dd_abs = self._calc_max_drawdown(profits, initial_balance)
         calmar = self._calc_calmar(profit_pcts, max_dd)
 
         pair_profits: Dict[str, float] = {}
@@ -240,6 +249,21 @@ class BacktestResult:
                 max_dd_abs = dd_abs
         return max_dd, max_dd_abs
 
+    def _calc_max_drawdown_curve(self) -> tuple:
+        """Max drawdown (%, abs) from the mark-to-market equity curve."""
+        peak = float("-inf")
+        max_dd = 0.0
+        max_dd_abs = 0.0
+        for _, value in self.equity_curve:
+            if value > peak:
+                peak = value
+            dd_abs = peak - value
+            dd_pct = (dd_abs / peak) * 100 if peak > 0 else 0
+            if dd_pct > max_dd:
+                max_dd = dd_pct
+                max_dd_abs = dd_abs
+        return max_dd, max_dd_abs
+
     def _calc_calmar(self, profit_pcts: List[float], max_dd: float) -> float:
         if max_dd == 0:
             return 0.0
@@ -253,6 +277,10 @@ class BacktestResult:
             "config": self.config,
             "metrics": self.metrics.to_dict(),
             "trades": [t.to_dict() for t in self.trades],
+            "equity_curve": [
+                [dt.isoformat() if isinstance(dt, datetime) else str(dt), value]
+                for dt, value in self.equity_curve
+            ],
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -345,12 +373,28 @@ class BacktestResult:
             metrics.end_date = datetime.fromisoformat(m["end_date"])
         metrics.backtest_days = m.get("backtest_days", 0)
 
+        equity_curve = []
+        for point in data.get("equity_curve", []):
+            dt, value = point[0], point[1]
+            equity_curve.append(
+                (datetime.fromisoformat(dt) if isinstance(dt, str) else dt, value)
+            )
+
         return cls(
             strategy_name=data.get("strategy", ""),
             trades=trades,
             metrics=metrics,
             config=data.get("config", {}),
+            equity_curve=equity_curve,
         )
+
+    def get_equity_dataframe(self) -> pd.DataFrame:
+        """
+        Get the equity curve as a DataFrame (date, equity) for analysis/plotting.
+        """
+        if not self.equity_curve:
+            return pd.DataFrame(columns=["date", "equity"])
+        return pd.DataFrame(self.equity_curve, columns=["date", "equity"])
 
     def get_trades_dataframe(self) -> pd.DataFrame:
         """

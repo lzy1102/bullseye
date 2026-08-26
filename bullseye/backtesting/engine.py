@@ -9,24 +9,20 @@ Compatible with Freqtrade IStrategy v3 interface.
 """
 import importlib
 import logging
-import math
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
 
 import pandas as pd
 
 from bullseye.configuration.config import Config
-from bullseye.data.dataprovider import DataProvider
 from bullseye.data.history import ParquetDataHandler, FeatherDataHandler, JSONDataHandler
 from bullseye.exceptions import (
     BacktestError,
-    DataNotFoundError,
     StrategyLoadError,
     StrategyValidationError,
 )
-from bullseye.gateway.base import BaseGateway
 from bullseye.order.position_manager import LocalTrade, PositionManager, MarketType
 from bullseye.order.order_executor import OrderExecutor
 from bullseye.order.settlement import SettlementType
@@ -212,6 +208,7 @@ class BacktestEngine:
         initial_balance: Optional[float] = None,
         fee: Optional[float] = None,
         export: Optional[str] = None,
+        data: Optional[Dict[str, Any]] = None,
     ) -> BacktestResult:
         """
         Run backtesting.
@@ -227,6 +224,7 @@ class BacktestEngine:
             initial_balance: Starting balance
             fee: Fee rate (e.g., 0.001 for 0.1%)
             export: Export filename for results
+            data: In-memory OHLCV data {pair: DataFrame}; skips disk loading
 
         Returns:
             BacktestResult with trades and metrics
@@ -255,8 +253,9 @@ class BacktestEngine:
         logger.info(f"Starting backtest: strategy={strategy.__class__.__name__}, "
                      f"pairs={pairlist}, timeframe={timeframe}")
 
-        # Load data
-        data = self._load_data(pairlist, timeframe, timerange)
+        # Load data (in-memory injection takes precedence over disk)
+        if data is None:
+            data = self._load_data(pairlist, timeframe, timerange)
         if not data:
             logger.error("No data available for backtesting")
             return BacktestResult(strategy_name=strategy.__class__.__name__)
@@ -317,6 +316,7 @@ class BacktestEngine:
                 "initial_balance": initial_balance,
                 "fee_rate": self._fee_rate,
             },
+            equity_curve=getattr(self, "_last_equity_curve", []),
         )
         result.calculate_metrics(initial_balance=initial_balance)
 
@@ -471,7 +471,8 @@ class BacktestEngine:
         signal_arrays: Dict[str, Dict[str, Any]] = {}
         for pair, df in data.items():
             price_arrays[pair] = {
-                col: df[col].to_numpy() for col in ("open", "high", "low", "close")
+                col: df[col].to_numpy()
+                for col in ("date", "open", "high", "low", "close")
             }
             signal_arrays[pair] = {
                 col: s[col].to_numpy() for col in s.columns
@@ -480,6 +481,10 @@ class BacktestEngine:
         # Track open trades
         open_trades: Dict[str, LocalTrade] = {}
         closed_bt_trades: List[BacktestTrade] = []
+        equity_curve: List[tuple] = []
+        # Last processed candle index per pair, for mark-to-market of
+        # pairs that have no candle at the current timestamp
+        pair_last_index: Dict[str, int] = {}
 
         # Balance tracking for equity curve
         startup_candle_count = getattr(strategy, 'startup_candle_count', 30)
@@ -511,6 +516,7 @@ class BacktestEngine:
                 current_high = prices["high"][idx]
                 current_low = prices["low"][idx]
                 signal_row = _ArrayRow(signal_arrays[pair], idx)
+                pair_last_index[pair] = idx
 
                 # === Check exits for open trades ===
                 if pair in open_trades:
@@ -544,6 +550,21 @@ class BacktestEngine:
                         stake_amount=stake_amount,
                     )
 
+            # Sample mark-to-market equity once per timestamp
+            equity = wallets.get_free(self._config.stake_currency)
+            for trade in open_trades.values():
+                last_idx = pair_last_index.get(trade.pair)
+                if last_idx is None:
+                    continue
+                rate = price_arrays[trade.pair]["close"][last_idx]
+                gross_pnl = (
+                    (rate - trade.open_rate) * trade.amount
+                    if not trade.is_short
+                    else (trade.open_rate - rate) * trade.amount
+                )
+                equity += trade.stake_amount + gross_pnl
+            equity_curve.append((current_date, equity))
+
         # Close any remaining open trades at the last price
         for pair, trade in list(open_trades.items()):
             df = data.get(pair)
@@ -566,6 +587,7 @@ class BacktestEngine:
             )
 
         logger.info(f"Backtest complete: {len(closed_bt_trades)} trades")
+        self._last_equity_curve = equity_curve
         return closed_bt_trades
 
     @staticmethod

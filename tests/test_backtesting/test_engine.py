@@ -4,7 +4,7 @@ Test backtesting engine
 import pytest
 import sys
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict
 
 import pandas as pd
@@ -12,7 +12,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from bullseye.backtesting.engine import BacktestEngine, BacktestDataProvider
-from bullseye.backtesting.result import BacktestResult, BacktestTrade, BacktestMetrics
+from bullseye.backtesting.result import BacktestResult, BacktestTrade
 from bullseye.configuration.config import Config
 from bullseye.strategy.interface import IStrategy
 
@@ -476,6 +476,137 @@ class TestSettlementRestriction:
             assert trade.close_rate == pytest.approx(close_)
             assert trade.exit_reason == reason
             assert trade.profit_abs == pytest.approx(profit, abs=1e-6)
+
+
+class TestEquityCurve:
+    """Mark-to-market equity curve sampling and curve-based drawdown."""
+
+    def test_equity_curve_via_run(self):
+        periods = 60
+        dates = pd.date_range(start=datetime(2024, 1, 1), periods=periods, freq="1h")
+        prices = []
+        p = 100.0
+        for i in range(periods):
+            if i % 10 == 9:
+                p -= 6.0
+            else:
+                p += 0.5
+            prices.append(round(p, 2))
+        data = {"BTC/USDT": pd.DataFrame({
+            "date": dates, "open": prices,
+            "high": [x + 0.3 for x in prices], "low": [x - 0.3 for x in prices],
+            "close": prices, "volume": [1000.0] * periods,
+        })}
+
+        class MixedExitStrategy(IStrategy):
+            timeframe = "1h"
+            startup_candle_count = 5
+            minimal_roi = {"0": 0.03}
+            stoploss = -0.05
+
+            def populate_indicators(self, dataframe, metadata):
+                return dataframe
+
+            def populate_entry_trend(self, dataframe, metadata):
+                dataframe["enter_long"] = 1
+                return dataframe
+
+            def populate_exit_trend(self, dataframe, metadata):
+                dataframe["exit_long"] = 0
+                return dataframe
+
+        config = Config()
+        config.set("dry_run_wallet", 10000)
+        config.set("stake_amount", 100)
+        config.set("max_open_trades", 1)
+
+        engine = BacktestEngine(config)
+        result = engine.run(
+            strategy_class=MixedExitStrategy,
+            pairlist=["BTC/USDT"],
+            timeframe="1h",
+            initial_balance=10000,
+            fee=0.001,
+            data=data,
+        )
+
+        curve = result.equity_curve
+        assert len(curve) > 40
+        # Curve starts at initial balance and ends at final balance
+        assert curve[0][1] == pytest.approx(10000)
+        assert curve[-1][1] == pytest.approx(result.metrics.final_balance, abs=0.5)
+
+    def test_max_drawdown_uses_mark_to_market_curve(self):
+        """Intra-trade dip must show up in max_drawdown even though the
+        trade later closes flat."""
+        periods = 30
+        dates = pd.date_range(start=datetime(2024, 1, 1), periods=periods, freq="1h")
+        # Price: 100 -> spikes down to 80 mid-data -> back to 100 (trade closes flat)
+        prices = [100.0] * periods
+        for i in range(10, 20):
+            prices[i] = 80.0
+        data = {"BTC/USDT": pd.DataFrame({
+            "date": dates, "open": prices, "high": prices,
+            "low": prices, "close": prices, "volume": [1000.0] * periods,
+        })}
+
+        class HoldFlatStrategy(IStrategy):
+            timeframe = "1h"
+            startup_candle_count = 2
+            minimal_roi = {}
+            stoploss = 0  # disabled - hold through the dip
+
+            def populate_indicators(self, dataframe, metadata):
+                return dataframe
+
+            def populate_entry_trend(self, dataframe, metadata):
+                dataframe["enter_long"] = 1
+                return dataframe
+
+            def populate_exit_trend(self, dataframe, metadata):
+                dataframe["exit_long"] = 0
+                return dataframe
+
+        config = Config()
+        config.set("dry_run_wallet", 10000)
+        config.set("stake_amount", 5000)
+        config.set("max_open_trades", 1)
+
+        engine = BacktestEngine(config)
+        result = engine.run(
+            strategy_class=HoldFlatStrategy,
+            pairlist=["BTC/USDT"],
+            timeframe="1h",
+            initial_balance=10000,
+            fee=0.001,
+            data=data,
+        )
+
+        # The single trade closes flat, so closed-trade-based accounting
+        # would report ~0% drawdown... but half the account rides through
+        # the 20% spike-down: equity dips 10000 -> 9000 => 10% drawdown.
+        assert len(result.trades) >= 1
+        assert result.metrics.max_drawdown == pytest.approx(10.0, rel=0.02)
+        assert result.metrics.max_drawdown_abs == pytest.approx(1000.0, rel=0.05)
+        equity_df = result.get_equity_dataframe()
+        assert list(equity_df.columns) == ["date", "equity"]
+
+    def test_result_save_load_roundtrips_equity_curve(self, tmp_path):
+        result = BacktestResult(
+            strategy_name="Test",
+            equity_curve=[
+                (datetime(2024, 1, 1), 1000.0),
+                (datetime(2024, 1, 2), 1100.0),
+                (datetime(2024, 1, 3), 990.0),
+            ],
+        )
+        filepath = str(tmp_path / "curve.json")
+        result.save(filepath)
+        loaded = BacktestResult.load(filepath)
+
+        assert len(loaded.equity_curve) == 3
+        assert loaded.equity_curve[0][0] == datetime(2024, 1, 1)
+        assert loaded.equity_curve[2][1] == pytest.approx(990.0)
 
 
     def test_result_save_and_load(self, tmp_path):
