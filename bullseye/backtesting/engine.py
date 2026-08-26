@@ -97,13 +97,17 @@ class BacktestDataProvider:
     def get_dataframe_up_to(self, pair: str, index: int) -> pd.DataFrame:
         """
         Get the dataframe up to (and including) the given index.
+
+        Returns a basic slice sharing the underlying data blocks (cheap);
+        original index labels are preserved. Callers must not mutate the
+        returned frame.
         """
         df = self._data.get(pair)
         if df is None or df.empty:
             return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
         if index <= 0:
             return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
-        return df.iloc[:index].reset_index(drop=True)
+        return df.iloc[:index]
 
     def set_current_index(self, pair: str, index: int) -> None:
         self._current_index[pair] = index
@@ -282,8 +286,8 @@ class BacktestEngine:
         # Call bot_start
         try:
             strategy.bot_start()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Strategy bot_start() failed: {e}", exc_info=True)
 
         # Run backtest
         trades = self._run_backtest_loop(
@@ -564,6 +568,19 @@ class BacktestEngine:
         logger.info(f"Backtest complete: {len(closed_bt_trades)} trades")
         return closed_bt_trades
 
+    @staticmethod
+    def _safe_callback(label: str, fn, default):
+        """Invoke an optional strategy callback, logging failures.
+
+        A crashing callback must not abort the backtest loop, but the
+        failure must be visible (previously these were swallowed silently).
+        """
+        try:
+            return fn()
+        except Exception as e:
+            logger.warning(f"Strategy callback {label} failed: {e}", exc_info=True)
+            return default
+
     def _check_entry(
         self,
         pair: str,
@@ -589,8 +606,9 @@ class BacktestEngine:
 
             if enter_long == 1:
                 # Confirm entry
-                try:
-                    confirmed = strategy.confirm_trade_entry(
+                confirmed = self._safe_callback(
+                    f"confirm_trade_entry[long]({pair})",
+                    lambda: strategy.confirm_trade_entry(
                         pair=pair,
                         order_type="market",
                         amount=0,
@@ -599,16 +617,17 @@ class BacktestEngine:
                         current_time=current_date,
                         entry_tag=enter_tag,
                         side="long",
-                    )
-                    if not confirmed:
-                        return
-                except Exception:
-                    pass
+                    ),
+                    True,
+                )
+                if not confirmed:
+                    return
 
                 # Calculate stake
                 actual_stake = stake_amount
-                try:
-                    custom_stake = strategy.custom_stake_amount(
+                custom_stake = self._safe_callback(
+                    f"custom_stake_amount[long]({pair})",
+                    lambda: strategy.custom_stake_amount(
                         pair=pair,
                         current_time=current_date,
                         current_rate=current_rate,
@@ -618,11 +637,11 @@ class BacktestEngine:
                         leverage=1.0,
                         entry_tag=enter_tag,
                         side="long",
-                    )
-                    if custom_stake is not None and custom_stake > 0:
-                        actual_stake = custom_stake
-                except Exception:
-                    pass
+                    ),
+                    None,
+                )
+                if custom_stake is not None and custom_stake > 0:
+                    actual_stake = custom_stake
 
                 available = wallets.get_available_stake_amount()
                 actual_stake = min(actual_stake, available)
@@ -674,8 +693,9 @@ class BacktestEngine:
                 enter_short = signal_row.get("enter_short", 0)
                 if enter_short == 1:
                     # Similar to long but with is_short=True
-                    try:
-                        confirmed = strategy.confirm_trade_entry(
+                    confirmed = self._safe_callback(
+                        f"confirm_trade_entry[short]({pair})",
+                        lambda: strategy.confirm_trade_entry(
                             pair=pair,
                             order_type="market",
                             amount=0,
@@ -684,11 +704,11 @@ class BacktestEngine:
                             current_time=current_date,
                             entry_tag=enter_tag,
                             side="short",
-                        )
-                        if not confirmed:
-                            return
-                    except Exception:
-                        pass
+                        ),
+                        True,
+                    )
+                    if not confirmed:
+                        return
 
                     actual_stake = stake_amount
                     available = wallets.get_available_stake_amount()
@@ -731,7 +751,7 @@ class BacktestEngine:
                     wallets.deduct_amount(self._config.stake_currency, actual_stake)
 
         except Exception as e:
-            logger.debug(f"Error checking entry for {pair}: {e}")
+            logger.warning(f"Error checking entry for {pair}: {e}", exc_info=True)
 
     def _check_exit(
         self,
@@ -874,29 +894,30 @@ class BacktestEngine:
                     return
 
         # 4. Check custom exit
-        try:
-            exit_reason = strategy.custom_exit(
+        exit_reason = self._safe_callback(
+            f"custom_exit({trade.pair})",
+            lambda: strategy.custom_exit(
                 pair=trade.pair,
                 trade=trade,
                 current_time=current_date,
                 current_rate=current_rate,
                 current_profit=profit_ratio,
                 exit_reason=None,
+            ),
+            None,
+        )
+        if exit_reason:
+            self._close_trade(
+                trade=trade,
+                rate=current_rate,
+                exit_reason=exit_reason,
+                current_date=current_date,
+                position_manager=position_manager,
+                wallets=wallets,
+                open_trades=open_trades,
+                closed_bt_trades=closed_bt_trades,
             )
-            if exit_reason:
-                self._close_trade(
-                    trade=trade,
-                    rate=current_rate,
-                    exit_reason=exit_reason,
-                    current_date=current_date,
-                    position_manager=position_manager,
-                    wallets=wallets,
-                    open_trades=open_trades,
-                    closed_bt_trades=closed_bt_trades,
-                )
-                return
-        except Exception:
-            pass
+            return
 
         # 5. Check exit signal from strategy (precomputed columns)
         exit_long = signal_row.get("exit_long", 0)
@@ -911,8 +932,9 @@ class BacktestEngine:
 
         if should_exit:
             # Confirm exit
-            try:
-                confirmed = strategy.confirm_trade_exit(
+            confirmed = self._safe_callback(
+                f"confirm_trade_exit({trade.pair})",
+                lambda: strategy.confirm_trade_exit(
                     pair=trade.pair,
                     trade=trade,
                     order_type="market",
@@ -921,11 +943,11 @@ class BacktestEngine:
                     time_in_force="GTC",
                     exit_reason="exit_signal",
                     current_time=current_date,
-                )
-                if not confirmed:
-                    return
-            except Exception:
-                pass
+                ),
+                True,
+            )
+            if not confirmed:
+                return
 
             self._close_trade(
                 trade=trade,

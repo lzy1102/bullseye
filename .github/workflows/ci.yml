@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install ruff
+      # Bug-class gate only: the codebase still has stylistic debt
+      # (unused imports, annotations) tracked separately.
+      - name: Ruff (bug classes)
+        run: ruff check bullseye/ tests/ --select F821,F823,F811,E722,B904
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-test.txt
+      - name: Run tests
+        env:
+          # Keep network-dependent datafeed tests deterministic in CI;
+          # they auto-skip when the packages are absent.
+          SKIP_NETWORK_TESTS: "1"
+        run: pytest tests/ -q

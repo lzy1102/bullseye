@@ -19,6 +19,10 @@ try:
 except ImportError:
     HAS_BAOSTOCK = False
 
+import os
+
+_skip_network = not HAS_BAOSTOCK or os.environ.get("SKIP_NETWORK_TESTS") == "1"
+
 
 from bullseye.data.datafeed.baostock_datafeed import BaoStockDatafeed
 from bullseye.data.datafeed import get_datafeed
@@ -88,7 +92,7 @@ class TestBaoStockOffline:
         assert datafeed._row_to_kline(row, "000001.SZ", "1d", "d") is None
 
 
-@pytest.mark.skipif(not HAS_BAOSTOCK, reason="baostock is not installed")
+@pytest.mark.skipif(_skip_network, reason="baostock not installed or network tests disabled")
 class TestBaoStockIntegration:
     """Live tests against the real BaoStock service (network required)."""
 
