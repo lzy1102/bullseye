@@ -1,5 +1,7 @@
 # Bullseye
 
+[![CI](https://github.com/lzy1102/bullseye/actions/workflows/ci.yml/badge.svg)](https://github.com/lzy1102/bullseye/actions/workflows/ci.yml)
+
 A quantitative trading framework compatible with [Freqtrade](https://github.com/freqtrade/freqtrade), supporting crypto, stock, and futures trading.
 
 ## Features
@@ -14,6 +16,9 @@ A quantitative trading framework compatible with [Freqtrade](https://github.com/
 - **Event-Driven Architecture** - High-performance event engine inspired by VeighNa (vnpy)
 - **Backtesting Engine** - Iterative backtesting with stoploss, trailing stop, ROI, and custom exit support
   - T+1/T+N settlement enforcement (A-shares cannot be sold same-day in backtests)
+  - Mark-to-market equity curve with curve-based max drawdown (captures intra-trade dips)
+  - Vectorized signal computation (indicators run once per pair, ~1000x faster on long histories)
+  - Accepts in-memory OHLCV data (`run(data={...})`) for programmatic use
 - **Hyperparameter Optimization** - Random search optimization with multiple loss functions
 - **Flexible Database** - SQLite (default), PostgreSQL, MySQL support
 - **Structured Exception Hierarchy** - Clear error handling with specific exception types
@@ -132,18 +137,12 @@ volumes:
 Your Freqtrade strategies work directly with Bullseye:
 
 ```python
-from bullseye.strategy import IStrategy, informative
+from bullseye.strategy import IStrategy
 from pandas import DataFrame
 import talib.abstract as ta
 
 class MyStrategy(IStrategy):
     timeframe = '5m'
-
-    # Use informative decorator for higher timeframes
-    @informative('1h')
-    def populate_indicators_1h(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        dataframe['rsi'] = ta.RSI(dataframe, 14)
-        return dataframe
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         dataframe['rsi'] = ta.RSI(dataframe, 14)
@@ -165,10 +164,26 @@ class MyStrategy(IStrategy):
         return dataframe
 ```
 
+> **Note on `@informative`**: the decorator syntax is accepted (Freqtrade
+> strategies import cleanly), but multi-timeframe execution is not wired
+> yet — indicators from decorated methods are not computed or merged.
+> Compute higher-timeframe features manually via
+> `merge_informative_pair()` until multi-timeframe backtesting lands.
+
 ### 2. Configure Your Market
 
 ```yaml
 # config.yaml
+
+# Settlement: ONE global switch (simplest)
+#   t0: sell anytime (crypto, US/HK stocks, futures)
+#   t1: sell next trading day (Chinese A-shares)
+#   t2: sell in 2 trading days (conservative/custom)
+# With `exchange-calendars` installed, T+1/T+2 dates skip holidays.
+# Advanced per-pair control: make "settlement" a dict with
+# mode/overrides/default - see config.yaml.example.
+settlement: t1
+
 market_type: crypto  # crypto | stock | future
 
 # For crypto
@@ -415,14 +430,14 @@ pytest tests/test_optimize/ -v
 pytest tests/ --cov=bullseye --cov-report=html
 ```
 
-Current test status: **217 passed, 14 skipped** (skipped tests require external dependencies like akshare/tushare/baostock or network access)
+Current test status: **242 passed, 14 skipped** (skipped tests require external dependencies like akshare/tushare/baostock or network access; CI runs on Python 3.10/3.12)
 
 ## Compatibility with Freqtrade
 
 | Feature | Bullseye | Freqtrade |
 |---------|----------|-----------|
 | IStrategy Interface | ✅ v3 | v3 |
-| @informative Decorator | ✅ | ✅ |
+| @informative Decorator | ⚠️ syntax only | ✅ |
 | Hyperoptable Parameters | ✅ | ✅ |
 | DataProvider | ✅ | ✅ |
 | Callbacks | ✅ | ✅ |
