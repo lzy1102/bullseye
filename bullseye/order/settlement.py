@@ -135,7 +135,7 @@ class SettlementDetector:
     - Futures: AU2506@SHFE, IF2506@CFFEX
 
     Configuration Support:
-    - mode: "auto" (default) or "manual"
+    - mode: "auto" (default) or "manual" (overrides + default only, no detection)
     - overrides: Per-pair settlement type overrides
     - default: Default settlement type for unknown pairs
 
@@ -202,12 +202,15 @@ class SettlementDetector:
         """
         Detect settlement rule for a trading pair.
 
-        Priority order:
+        Priority order (mode: "auto", the default):
         1. Direct rule overrides (from constructor)
         2. Config pair overrides (from settlement.overrides)
         3. Auto-detection from pair format
         4. Exchange hint detection
         5. Default rule from config or T+0
+
+        With mode: "manual" auto-detection is disabled entirely - only
+        overrides apply, everything else falls back to the default rule.
 
         Args:
             pair: Trading pair
@@ -231,6 +234,10 @@ class SettlementDetector:
         if pair in self._pair_overrides:
             override_type = self._pair_overrides[pair].lower()
             return self._get_rule_by_type(override_type, pair_upper)
+
+        # Manual mode: no auto-detection, everything unlisted uses default
+        if self._settlement_config.get("mode", "auto") == "manual":
+            return self._get_default_rule()
 
         # 3. Auto-detect from pair format
         rule = self._detect_from_pair(pair)

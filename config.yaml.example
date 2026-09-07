@@ -41,6 +41,12 @@ market_type: auto
 # T+1: Can sell next trading day (Chinese A-shares)
 # T+2: Can sell in 2 trading days (some markets)
 #
+# mode:
+#   "auto" (default): detect from pair format, then apply overrides
+#   "manual": NEVER auto-detect - use overrides + default only.
+#             List every pair explicitly, e.g. for exchange-traded
+#             funds/convertible bonds that must not be auto-classified.
+#
 # Note: With `exchange-calendars` installed, T+1 settlement dates for
 # A-shares skip Chinese public holidays (e.g. buying before National Day
 # settles after the holiday). Without it, only weekends are skipped.

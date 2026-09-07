@@ -153,3 +153,37 @@ class TestT2AndLivePath:
         assert trade.settlement_date.tzinfo is not None
         # Must not raise; position opened today-ish is still restricted
         assert isinstance(trade.available_for_sale, bool)
+
+
+class TestManualMode:
+    """mode: manual disables pair-format auto-detection entirely."""
+
+    def test_manual_ignores_auto_detection(self):
+        # Would auto-detect as T+1 in auto mode; manual must NOT
+        detector = SettlementDetector(
+            settlement_config={"mode": "manual", "default": "t0"}
+        )
+        assert detector.detect_settlement_rule("000001.SZ").settlement_type == SettlementType.T0
+        assert detector.detect_settlement_rule("BTC/USDT").settlement_type == SettlementType.T0
+
+    def test_manual_uses_default_for_everything(self):
+        detector = SettlementDetector(
+            settlement_config={"mode": "manual", "default": "t1"}
+        )
+        assert detector.detect_settlement_rule("BTC/USDT").settlement_type == SettlementType.T1
+        assert detector.detect_settlement_rule("AAPL").settlement_type == SettlementType.T1
+
+    def test_manual_override_wins_over_default(self):
+        detector = SettlementDetector(
+            settlement_config={
+                "mode": "manual",
+                "default": "t1",
+                "overrides": {"BTC/USDT": "t0"},
+            }
+        )
+        assert detector.detect_settlement_rule("BTC/USDT").settlement_type == SettlementType.T0
+        assert detector.detect_settlement_rule("600000.SH").settlement_type == SettlementType.T1
+
+    def test_auto_mode_still_detects(self):
+        detector = SettlementDetector(settlement_config={"mode": "auto"})
+        assert detector.detect_settlement_rule("000001.SZ").settlement_type == SettlementType.T1
