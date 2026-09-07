@@ -466,6 +466,19 @@ class BacktestEngine:
             signal_df = strategy.populate_exit_trend(signal_df, metadata)
             precomputed_signals[pair] = signal_df
 
+        # Signal rows are read positionally against the price data, so a
+        # strategy that dropped/reordered rows inside populate_* would
+        # silently trade on misaligned signals. Fail loudly instead.
+        for pair, signal_df in precomputed_signals.items():
+            if len(signal_df) != len(data[pair]):
+                raise BacktestError(
+                    f"Signal misalignment for {pair}: populate_* returned "
+                    f"{len(signal_df)} rows for {len(data[pair])} input candles. "
+                    "populate_indicators/entry_trend/exit_trend must not "
+                    "drop, reorder, or extend rows (use startup_candle_count "
+                    "for warm-up periods instead of dropna())."
+                )
+
         # Extract per-column numpy arrays once: O(1) scalar reads in the loop
         price_arrays: Dict[str, Dict[str, Any]] = {}
         signal_arrays: Dict[str, Dict[str, Any]] = {}

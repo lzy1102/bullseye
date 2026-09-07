@@ -375,7 +375,7 @@ class SettlementDetector:
             )
 
         if settlement_session is not None:
-            return datetime.combine(
+            settlement_dt = datetime.combine(
                 settlement_session, datetime.min.time()
             ).replace(
                 hour=rule.market_open_hour,
@@ -383,6 +383,9 @@ class SettlementDetector:
                 second=0,
                 microsecond=0,
             )
+            # Preserve the timezone of the open date so downstream
+            # comparisons never mix naive and aware datetimes
+            return settlement_dt.replace(tzinfo=open_date.tzinfo)
 
         # Fallback: weekend-skip only (no calendar available)
         settlement_date = open_date
@@ -427,7 +430,7 @@ class SettlementDetector:
             # Return date without time adjustment
             return settlement_date
 
-        return settlement_date
+        return settlement_date.replace(tzinfo=open_date.tzinfo)
 
     @staticmethod
     def _next_trading_sessions(

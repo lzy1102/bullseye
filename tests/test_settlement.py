@@ -101,3 +101,13 @@ class TestSettlementDate:
     def test_t0_returns_open_date(self):
         open_dt = datetime(2024, 1, 4, 14, 50)
         assert get_settlement_date(open_dt, "BTC/USDT") == open_dt
+
+    def test_tz_aware_open_date_preserves_timezone(self):
+        """tz-aware input (e.g. UTC from ccxt) must not produce naive output
+        that crashes datetime comparisons later."""
+        from datetime import timezone
+        open_dt = datetime(2024, 1, 4, 14, 50, tzinfo=timezone.utc)
+        settlement = get_settlement_date(open_dt, "000001.SZ")
+        assert settlement.tzinfo is not None
+        # Comparison with aware now must not raise
+        assert datetime(2024, 1, 5, 10, 0, tzinfo=timezone.utc) >= settlement

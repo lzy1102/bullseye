@@ -480,14 +480,15 @@ def merge_informative_pair(
 
     minutes = timeframe_to_minutes(informative_timeframe)
 
-    # Shift date to avoid lookahead bias
+    # Shift date to avoid lookahead bias: a higher-timeframe candle stamped
+    # at its open time is merged onto the base-timeframe row at which the
+    # candle closes, so no future information leaks backward.
     informative = informative.copy()
     informative['date_merge'] = informative["date"] + pd.to_timedelta(minutes, 'm')
 
     # Rename columns
     inf_tf = informative_timeframe
-    informative.columns = [f"{col}_{inf_tf}" if col != 'date_merge' else col
-                          for col in informative.columns]
+    informative.columns = [f"{col}_{inf_tf}" for col in informative.columns]
 
     # Merge
     dataframe = pd.merge(

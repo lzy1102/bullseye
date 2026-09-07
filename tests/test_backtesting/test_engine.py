@@ -637,3 +637,17 @@ class TestEquityCurve:
         assert loaded.strategy_name == "TestStrategy"
         assert len(loaded.trades) == 1
         assert loaded.trades[0].pair == "BTC/USDT"
+
+    def test_signal_misalignment_raises(self):
+        """A strategy that drops rows in populate_* must fail loudly instead
+        of silently trading on misaligned signals."""
+        from bullseye.exceptions import BacktestError
+
+        class RowDroppingStrategy(FlatTestStrategy):
+            def populate_indicators(self, dataframe, metadata):
+                # Simulates a strategy dropping warm-up rows
+                return dataframe.iloc[:-5]
+
+        data = make_flat_data({"BTC/USDT": 30})
+        with pytest.raises(BacktestError, match="Signal misalignment"):
+            run_flat_backtest(RowDroppingStrategy, data)
