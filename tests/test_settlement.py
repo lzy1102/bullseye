@@ -111,3 +111,45 @@ class TestSettlementDate:
         assert settlement.tzinfo is not None
         # Comparison with aware now must not raise
         assert datetime(2024, 1, 5, 10, 0, tzinfo=timezone.utc) >= settlement
+
+
+class TestT2AndLivePath:
+    """T+2 overrides and the live (wall-clock) availability gate."""
+
+    def test_t2_override_skips_weekend(self):
+        detector = SettlementDetector(
+            settlement_config={"overrides": {"600000.SH": "t2"}}
+        )
+        # Thursday -> Fri, Mon (2 trading sessions)
+        assert detector.get_settlement_date(
+            datetime(2024, 1, 4, 14, 50), "600000.SH"
+        ) == datetime(2024, 1, 8, 9, 30)
+        # Friday -> Mon, Tue
+        assert detector.get_settlement_date(
+            datetime(2024, 1, 5, 14, 50), "600000.SH"
+        ) == datetime(2024, 1, 9, 9, 30)
+
+    def test_unknown_override_type_warns_and_falls_back_to_t0(self, caplog):
+        detector = SettlementDetector(
+            settlement_config={"overrides": {"600000.SH": "t3"}}
+        )
+        rule = detector.detect_settlement_rule("600000.SH")
+        assert rule.settlement_type == SettlementType.T0
+        assert any("Unknown settlement type" in r.message for r in caplog.records)
+
+    def test_available_for_sale_tz_aware_no_crash(self):
+        """Live path: tz-aware open dates (ccxt-style) must not crash the
+        availability comparison."""
+        from datetime import timezone
+        from bullseye.order.position_manager import LocalTrade
+
+        trade = LocalTrade(
+            pair="600000.SH", exchange="test", strategy="S", timeframe="1d",
+            market_type="stock",
+            open_date=datetime(2024, 1, 4, 6, 50, tzinfo=timezone.utc),
+            open_rate=10.0, amount=100.0, stake_amount=1000.0, fee_open=1.0,
+            is_short=False,
+        )
+        assert trade.settlement_date.tzinfo is not None
+        # Must not raise; position opened today-ish is still restricted
+        assert isinstance(trade.available_for_sale, bool)

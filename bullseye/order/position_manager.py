@@ -174,7 +174,13 @@ class LocalTrade:
         if self.settlement_date is None:
             return False
 
-        return datetime.now() >= self.settlement_date
+        # Compare in the settlement date's timezone: live open dates may be
+        # tz-aware (e.g. UTC from ccxt) while datetime.now() is naive.
+        if self.settlement_date.tzinfo is not None:
+            now = datetime.now(self.settlement_date.tzinfo)
+        else:
+            now = datetime.now()
+        return now >= self.settlement_date
 
     @property
     def trading_mode(self) -> str:

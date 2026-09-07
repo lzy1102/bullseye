@@ -266,9 +266,17 @@ class SettlementDetector:
                 description="T+2 settlement (2 trading days)",
                 settlement_days=2,
                 skip_weekends=True,
+                calendar_code="XSHG",
             ),
         }
-        return type_map.get(settlement_type.lower(), SETTLEMENT_RULES["crypto"])
+        rule = type_map.get(settlement_type.lower())
+        if rule is None:
+            logger.warning(
+                f"Unknown settlement type '{settlement_type}' for {pair}, "
+                "falling back to T+0. Valid values: t0, t1, t2."
+            )
+            rule = SETTLEMENT_RULES["crypto"]
+        return rule
 
     def _get_default_rule(self) -> SettlementRule:
         """Get the default settlement rule from config."""
