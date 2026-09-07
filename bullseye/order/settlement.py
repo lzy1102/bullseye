@@ -496,12 +496,13 @@ def _get_cached_calendar(calendar_code: str):
     return _calendar_cache[calendar_code]
 
 
-def init_settlement_detector(config: Optional[Dict] = None) -> None:
+def init_settlement_detector(config: Optional["Dict[str, Any] | str"] = None) -> None:
     """
     Initialize the global settlement detector with configuration.
 
     Args:
-        config: Settlement configuration dict with:
+        config: Either a simple global mode string ("t0", "t1", "t2")
+            applying to ALL pairs, or a settlement dict:
             - mode: "auto" or "manual"
             - overrides: Dict[str, str] - pair -> settlement type mapping
             - default: Default settlement type ("t0", "t1", "t2")
@@ -512,7 +513,13 @@ def init_settlement_detector(config: Optional[Dict] = None) -> None:
         init_settlement_detector(config.settlement)
     """
     global _detector
-    _detector = SettlementDetector(settlement_config=config)
+    if isinstance(config, str):
+        # Simple global mode: one switch for every pair
+        _detector = SettlementDetector(
+            settlement_config={"mode": "manual", "default": config.lower()}
+        )
+    else:
+        _detector = SettlementDetector(settlement_config=config)
 
 
 def detect_settlement_rule(pair: str, exchange: Optional[str] = None) -> SettlementRule:

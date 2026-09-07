@@ -22,6 +22,7 @@ from bullseye.order.settlement import (
     SettlementType,
     detect_settlement_rule,
     get_settlement_date,
+    init_settlement_detector,
     is_t1_market,
     _calendar_cache,
 )
@@ -187,3 +188,40 @@ class TestManualMode:
     def test_auto_mode_still_detects(self):
         detector = SettlementDetector(settlement_config={"mode": "auto"})
         assert detector.detect_settlement_rule("000001.SZ").settlement_type == SettlementType.T1
+
+
+class TestGlobalSimpleMode:
+    """One-switch configuration: settlement: "t0" / "t1" / "t2"."""
+
+    @pytest.fixture(autouse=True)
+    def restore_global_detector(self):
+        """Global detector is mutated by init; restore after each test."""
+        import bullseye.order.settlement as settlement_mod
+        old = settlement_mod._detector
+        yield
+        settlement_mod._detector = old
+
+    def test_global_t1_applies_to_all_pairs(self):
+        init_settlement_detector("t1")
+        assert detect_settlement_rule("BTC/USDT").settlement_type == SettlementType.T1
+        assert detect_settlement_rule("AAPL").settlement_type == SettlementType.T1
+        assert detect_settlement_rule("000001.SZ").settlement_type == SettlementType.T1
+
+    def test_global_t0_applies_to_all_pairs(self):
+        init_settlement_detector("t0")
+        assert detect_settlement_rule("000001.SZ").settlement_type == SettlementType.T0
+
+    def test_global_mode_ignores_pair_format(self):
+        init_settlement_detector("t0")
+        # A-share pair would auto-detect T1 in dict mode; global says t0
+        assert detect_settlement_rule("600000.SH").settlement_type == SettlementType.T0
+
+    def test_global_invalid_value_warns_falls_back_t0(self, caplog):
+        init_settlement_detector("t9")
+        assert detect_settlement_rule("000001.SZ").settlement_type == SettlementType.T0
+        assert any("Unknown settlement type" in r.message for r in caplog.records)
+
+    def test_dict_mode_still_works_after_init(self):
+        init_settlement_detector({"overrides": {"600000.SH": "t2"}, "default": "t0"})
+        assert detect_settlement_rule("600000.SH").settlement_type == SettlementType.T2
+        assert detect_settlement_rule("000001.SZ").settlement_type == SettlementType.T1

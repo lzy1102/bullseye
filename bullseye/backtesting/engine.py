@@ -25,7 +25,7 @@ from bullseye.exceptions import (
 )
 from bullseye.order.position_manager import LocalTrade, PositionManager, MarketType
 from bullseye.order.order_executor import OrderExecutor
-from bullseye.order.settlement import SettlementType
+from bullseye.order.settlement import SettlementType, init_settlement_detector
 from bullseye.strategy.interface import IStrategy
 from bullseye.wallets.wallets import Wallets
 
@@ -252,6 +252,12 @@ class BacktestEngine:
 
         logger.info(f"Starting backtest: strategy={strategy.__class__.__name__}, "
                      f"pairs={pairlist}, timeframe={timeframe}")
+
+        # Apply settlement configuration (simple "t0"/"t1" string or dict)
+        # so LocalTrade auto-detection honors user settings in backtests too
+        settlement_cfg = self._config.settlement
+        if settlement_cfg:
+            init_settlement_detector(settlement_cfg)
 
         # Load data (in-memory injection takes precedence over disk)
         if data is None:
