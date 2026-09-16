@@ -110,6 +110,7 @@ custom:
   base_url: "http://127.0.0.1:8000"                  # -> connect(**kwargs)
   token: ""
   kill_switch_file: ".trading_disabled"
+  datafeed: baostock          # historical bars fallback (see below)
 execution:
   order_timeout: 10
   order_poll_interval: 0.5
@@ -117,6 +118,21 @@ execution:
 
 `_create_gateway()` loads the class dynamically; every key under `custom`
 except `gateway` itself is forwarded to `connect(**kwargs)`.
+
+### Market data for execution-only gateways
+
+The `DataProvider` fetches K-lines via `gateway.get_bars()`. Bridges and
+app-automation backends usually have no historical data, and CTP only
+serves live ticks - so historical bars come from a **fallback datafeed**:
+
+1. Implement `get_bars()` if your bridge can serve history (optional
+   `/bars` endpoint - see `TemplateGateway.get_bars`).
+2. Otherwise configure `<market>.datafeed` (`baostock` / `tushare` /
+   `akshare`). `DataProvider` tries the gateway first and falls back to
+   the datafeed when it returns nothing.
+
+Without either, the strategy receives empty dataframes and will not
+trade - startup logs a warning.
 
 ### Minimal class skeleton
 

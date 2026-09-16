@@ -137,10 +137,32 @@ class BacktestResult:
         Calculate all backtest metrics from the trade list.
         """
         if not self.trades:
-            self.metrics = BacktestMetrics(
+            metrics = BacktestMetrics(
                 initial_balance=initial_balance,
                 final_balance=initial_balance,
             )
+            # Even with zero trades the equity curve carries information
+            # (flat balance, or mark-to-market drift before force-exit)
+            if self.equity_curve:
+                first_dt = self.equity_curve[0][0]
+                last_dt, last_value = self.equity_curve[-1]
+                metrics.final_balance = last_value
+                metrics.total_profit = last_value - initial_balance
+                metrics.total_profit_pct = (
+                    (last_value - initial_balance) / initial_balance * 100
+                    if initial_balance > 0 else 0.0
+                )
+                if isinstance(first_dt, datetime) and isinstance(last_dt, datetime):
+                    metrics.start_date = first_dt
+                    metrics.end_date = last_dt
+                    metrics.backtest_days = (last_dt - first_dt).days + 1
+                metrics.max_drawdown, metrics.max_drawdown_abs = self._calc_max_drawdown_curve()
+                daily = self._daily_returns()
+                if len(daily) >= 2:
+                    metrics.sharpe_ratio = self._calc_sharpe(daily)
+                    metrics.sortino_ratio = self._calc_sortino(daily)
+                metrics.calmar_ratio = self._calc_calmar([], metrics.max_drawdown, initial_balance)
+            self.metrics = metrics
             return
 
         profits = [t.profit_abs for t in self.trades]
@@ -161,12 +183,18 @@ class BacktestResult:
         sharpe = self._calc_sharpe(profits)
         sortino = self._calc_sortino(profits)
         if self.equity_curve:
+            # Prefer daily-return statistics from the equity curve:
+            # annualizing per-trade returns is conceptually wrong.
+            daily = self._daily_returns()
+            if len(daily) >= 2:
+                sharpe = self._calc_sharpe(daily)
+                sortino = self._calc_sortino(daily)
             # Mark-to-market drawdown from the equity curve captures
             # intra-trade dips that closed-trade accounting misses.
             max_dd, max_dd_abs = self._calc_max_drawdown_curve()
         else:
             max_dd, max_dd_abs = self._calc_max_drawdown(profits, initial_balance)
-        calmar = self._calc_calmar(profit_pcts, max_dd)
+        calmar = self._calc_calmar(profit_pcts, max_dd, initial_balance)
 
         pair_profits: Dict[str, float] = {}
         for t in self.trades:
@@ -207,6 +235,25 @@ class BacktestResult:
             initial_balance=initial_balance,
             final_balance=initial_balance + total_profit,
         )
+
+    def _daily_returns(self) -> List[float]:
+        """
+        Daily simple returns from the equity curve (last value per day).
+        """
+        if not self.equity_curve:
+            return []
+        last_per_day: Dict[Any, float] = {}
+        for dt, value in self.equity_curve:
+            day = dt.date() if isinstance(dt, datetime) else dt
+            last_per_day[day] = value
+        days = sorted(last_per_day.keys())
+        values = [last_per_day[d] for d in days]
+
+        returns = []
+        for prev, cur in zip(values, values[1:]):
+            if prev > 0:
+                returns.append((cur - prev) / prev)
+        return returns
 
     def _calc_sharpe(self, profits: List[float], risk_free: float = 0.0) -> float:
         import math
@@ -264,9 +311,25 @@ class BacktestResult:
                 max_dd_abs = dd_abs
         return max_dd, max_dd_abs
 
-    def _calc_calmar(self, profit_pcts: List[float], max_dd: float) -> float:
+    def _calc_calmar(
+        self,
+        profit_pcts: List[float],
+        max_dd: float,
+        initial_balance: float = 1000.0,
+    ) -> float:
+        """Calmar: annualized return / max drawdown."""
         if max_dd == 0:
             return 0.0
+
+        if self.equity_curve and len(self.equity_curve) >= 2:
+            first_dt, first_v = self.equity_curve[0]
+            last_dt, last_v = self.equity_curve[-1]
+            if first_v > 0 and isinstance(first_dt, datetime) and isinstance(last_dt, datetime):
+                total_pct = (last_v - first_v) / first_v * 100
+                days = max(1, (last_dt - first_dt).days)
+                annual_pct = total_pct * 365.0 / days
+                return annual_pct / max_dd
+
         annual_return = sum(profit_pcts) if profit_pcts else 0
         return annual_return / max_dd
 

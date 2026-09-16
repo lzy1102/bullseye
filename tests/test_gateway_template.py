@@ -3,6 +3,7 @@ Test TemplateGateway (HTTP order bridge reference implementation).
 """
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -232,5 +233,32 @@ class TestQueries:
         gw, engine = make_gateway(transport)
         try:
             assert gw.query_contract() == []
+        finally:
+            engine.stop()
+
+
+class TestBarsFallback:
+    def test_get_bars_from_bridge(self):
+        transport = FakeTransport()
+        transport.set("GET", "/bars", [
+            {"datetime": "2024-01-01T00:00:00", "open": 10, "high": 11,
+             "low": 9, "close": 10.5, "volume": 100},
+            {"datetime": "2024-01-02T00:00:00", "open": 10.5, "high": 11.5,
+             "low": 9.5, "close": 11, "volume": 120},
+        ])
+        gw, engine = make_gateway(transport)
+        try:
+            bars = gw.get_bars("600000.SH", "1d", limit=50)
+            assert len(bars) == 2
+            assert bars[0].close_price == pytest.approx(10.5)
+            assert bars[0].datetime == datetime(2024, 1, 1)
+        finally:
+            engine.stop()
+
+    def test_get_bars_absent_endpoint_returns_empty(self):
+        transport = FakeTransport()  # no /bars scripted -> ConnectionError inside
+        gw, engine = make_gateway(transport)
+        try:
+            assert gw.get_bars("600000.SH", "1d") == []
         finally:
             engine.stop()

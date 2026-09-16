@@ -28,6 +28,7 @@ See docs/gateway-development.md for the full integration standard.
 """
 import time
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from ..base import BaseGateway, GatewayType
@@ -311,6 +312,58 @@ class TemplateGateway(BaseGateway):
         if count:
             logger.info(f"Reconciled {count} open order(s) from the bridge")
         return count
+
+    def get_bars(
+        self,
+        symbol: str,
+        interval: str,
+        start: Optional[Any] = None,
+        end: Optional[Any] = None,
+        limit: int = 1000,
+    ) -> List[Any]:
+        """
+        Fetch historical K-lines from the bridge (optional endpoint).
+
+        Bridge contract:
+            GET /bars?symbol=..&interval=..&limit=..
+            -> [{"datetime": ISO8601, "open", "high", "low", "close", "volume"}]
+
+        If your bridge serves no history (typical for app-automation
+        backends), leave this returning [] and configure a fallback
+        datafeed instead: custom.datafeed: baostock (see DataProvider).
+        """
+        try:
+            raw_list = self._transport.request(
+                "GET", f"/bars?symbol={symbol}&interval={interval}&limit={limit}"
+            ) or []
+        except Exception as e:
+            logger.debug(f"Bridge has no /bars endpoint ({e}); returning []")
+            return []
+
+        from ...trader.object import KlineData
+
+        klines = []
+        for raw in raw_list:
+            try:
+                dt = raw.get("datetime")
+                if isinstance(dt, str):
+                    dt = datetime.fromisoformat(dt)
+                klines.append(
+                    KlineData(
+                        gateway_name=self.gateway_name,
+                        symbol=symbol,
+                        interval=interval,
+                        datetime=dt,
+                        open_price=float(raw.get("open", 0) or 0),
+                        high_price=float(raw.get("high", 0) or 0),
+                        low_price=float(raw.get("low", 0) or 0),
+                        close_price=float(raw.get("close", 0) or 0),
+                        volume=float(raw.get("volume", 0) or 0),
+                    )
+                )
+            except Exception as e:
+                logger.debug(f"Skipping unparsable bar: {e}")
+        return klines
 
     # ==================== Queries (required) ====================
 

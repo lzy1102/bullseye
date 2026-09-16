@@ -118,6 +118,9 @@ future:
   auth_code: ""
   product_info: ""
 
+  # CTP serves ticks only - historical K-lines need a fallback datafeed:
+  # datafeed: akshare
+
 # ==================== Custom Gateway (personal order bridge) ====================
 # Plug your own execution backend (e.g. an HTTP order bridge). The class is
 # loaded dynamically and receives connect(**custom) - see
@@ -128,6 +131,8 @@ future:
 #   base_url: "http://127.0.0.1:8000"
 #   token: ""
 #   kill_switch_file: ".trading_disabled"
+#   datafeed: baostock         # fallback historical bars when the gateway
+#                              # has no get_bars (order bridges usually don't)
 # execution:
 #   order_timeout: 10          # seconds to wait for order confirmation
 #   order_poll_interval: 0.5   # seconds between status polls

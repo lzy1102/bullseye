@@ -310,9 +310,15 @@ class LocalTrade:
         open_value = self.open_rate * self.amount
 
         if self.is_short:
-            profit = open_value - current_value
+            raw_profit = open_value - current_value
         else:
-            profit = current_value - open_value
+            raw_profit = current_value - open_value
+
+        # Leverage applies to the price move on margin, matching
+        # calc_profit_ratio (which also scales by leverage). Fees are not
+        # leveraged.
+        leverage = self.leverage or 1.0
+        profit = raw_profit * leverage
 
         # Subtract fees
         profit -= self.fee_open

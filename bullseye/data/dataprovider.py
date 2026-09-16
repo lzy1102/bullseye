@@ -55,6 +55,12 @@ class DataProvider:
         self._gateway = gateway
         self._pairlist = pairlist or []
 
+        # Optional fallback datafeed for gateways without historical bars
+        # (e.g. CTP futures, personal order-bridge gateways). Config:
+        #   <market section>.datafeed: baostock | tushare | akshare
+        #   (or top-level datafeed)
+        self._datafeed = self._create_fallback_datafeed(config)
+
         # Market adapter for pair format conversion
         self._market_adapter = MarketAdapterFactory.auto_detect(
             self._pairlist[0] if self._pairlist else "BTC/USDT"
@@ -78,6 +84,44 @@ class DataProvider:
 
         # Pending messages for strategy
         self._messages: List[str] = []
+
+    @staticmethod
+    def _create_fallback_datafeed(config: Config):
+        """
+        Create the optional fallback datafeed from configuration.
+
+        Looks for a `datafeed` key in the market-specific section first
+        (stock/future/custom), then top-level. Returns None when not
+        configured or when initialization fails (logged, non-fatal).
+        """
+        market = str(config.get("market_type", "") or "").lower()
+        section: Dict = {}
+        if market in ("stock", "future", "custom"):
+            section = config.get(market, {}) or {}
+
+        name = section.get("datafeed") or config.get("datafeed", "")
+        if not name:
+            return None
+
+        try:
+            from bullseye.data.datafeed import get_datafeed
+
+            feed_config: Dict = {}
+            if name.lower() == "tushare":
+                token = section.get("tushare_token") or config.get("tushare_token", "")
+                if token:
+                    feed_config["token"] = token
+
+            datafeed = get_datafeed(name, feed_config)
+            output = lambda msg: logger.info(msg)  # noqa: E731
+            if not datafeed.init(output=output):
+                logger.warning(f"Fallback datafeed '{name}' failed to initialize")
+                return None
+            logger.info(f"Fallback datafeed enabled: {name}")
+            return datafeed
+        except Exception as e:
+            logger.warning(f"Could not create fallback datafeed '{name}': {e}")
+            return None
 
     def historic_ohlcv(
         self,
@@ -115,6 +159,19 @@ class DataProvider:
                 interval=timeframe,
                 limit=limit or startup_candles or 500,
             )
+
+            # Fallback to the configured datafeed when the gateway has no
+            # historical bars (e.g. CTP futures, order-bridge gateways)
+            if not klines and self._datafeed is not None:
+                logger.debug(
+                    f"Gateway returned no bars for {pair} {timeframe}; "
+                    f"trying fallback datafeed"
+                )
+                klines = self._datafeed.query_history(
+                    symbol=pair,
+                    interval=timeframe,
+                    limit=limit or startup_candles or 500,
+                )
 
             if not klines:
                 logger.warning(f"No OHLCV data available for {pair} {timeframe}")
