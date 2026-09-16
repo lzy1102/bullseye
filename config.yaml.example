@@ -118,6 +118,20 @@ future:
   auth_code: ""
   product_info: ""
 
+# ==================== Custom Gateway (personal order bridge) ====================
+# Plug your own execution backend (e.g. an HTTP order bridge). The class is
+# loaded dynamically and receives connect(**custom) - see
+# docs/gateway-development.md and bullseye/gateway/template/.
+# market_type: custom
+# custom:
+#   gateway: "my_package.my_module.MyBrokerGateway"
+#   base_url: "http://127.0.0.1:8000"
+#   token: ""
+#   kill_switch_file: ".trading_disabled"
+# execution:
+#   order_timeout: 10          # seconds to wait for order confirmation
+#   order_poll_interval: 0.5   # seconds between status polls
+
 # ==================== International Market Configuration ====================
 international:
   # Gateway: ib, tap, da
