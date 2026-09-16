@@ -538,7 +538,9 @@ class PositionManager:
             self._trades[pair] = trade
 
         # Update wallet (outside lock to avoid deadlock)
-        self._wallets.deduct_amount(self._config.stake_currency, stake_amount + fee)
+        # Fees (open + close) are settled once at close via calc_profit;
+        # deducting fee_open here as well would double-charge it.
+        self._wallets.deduct_amount(self._config.stake_currency, stake_amount)
 
         # Log T+1 info for stocks
         if mt == MarketType.STOCK:

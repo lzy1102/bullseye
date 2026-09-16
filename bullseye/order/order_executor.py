@@ -3,17 +3,27 @@ Order Executor - Order execution and trade management for Bullseye.
 
 Handles the execution of entry and exit orders, including position sizing,
 trailing stop management, and T+1 compliance checking.
+
+Two execution modes:
+- Simulated (default / dry-run): trades are booked locally at the given rate.
+- Live (gateway wired + dry_run=False): orders are sent through the
+  gateway, confirmed by polling query_order, and booked at the actual
+  fill price/quantity.
 """
 import logging
+import time
 from datetime import datetime
 from typing import Any, Dict, Optional
 
 from bullseye.configuration.config import Config
 from bullseye.order.position_manager import LocalTrade, PositionManager, MarketType
 from bullseye.strategy.interface import IStrategy
+from bullseye.trader.object import Direction, Offset, OrderData, OrderType, Status
 from bullseye.wallets.wallets import Wallets
 
 logger = logging.getLogger(__name__)
+
+_TERMINAL_STATUSES = (Status.ALLTRADED, Status.CANCELLED, Status.REJECTED)
 
 
 class OrderExecutor:
@@ -49,6 +59,7 @@ class OrderExecutor:
         self._pm = position_manager
         self._wallets = wallets
         self._strategy = strategy
+        self._gateway = None
 
         # Settings
         self._fee_rate = 0.001  # Default 0.1% fee
@@ -56,6 +67,15 @@ class OrderExecutor:
 
         # Market type from config
         self._market_type = self._get_market_type_from_config()
+
+    def set_gateway(self, gateway) -> None:
+        """Wire the trading gateway used for live order routing."""
+        self._gateway = gateway
+
+    @property
+    def is_live(self) -> bool:
+        """Live execution: gateway present and not in dry-run mode."""
+        return self._gateway is not None and not self._config.dry_run
 
     def _get_market_type_from_config(self) -> MarketType:
         """Get market type from configuration."""
@@ -214,7 +234,11 @@ class OrderExecutor:
             except Exception as e:
                 logger.warning(f"Error in confirm_trade_entry: {e}")
 
-        # Execute the trade
+        # Live mode: route through the gateway and book the actual fill
+        if self.is_live:
+            return self._execute_entry_live(pair, rate, amount, stake_amount, enter_tag)
+
+        # Execute the trade (simulated)
         trade = self._pm.open_trade(
             pair=pair,
             rate=rate,
@@ -283,7 +307,11 @@ class OrderExecutor:
             except Exception as e:
                 logger.warning(f"Error in confirm_trade_exit: {e}")
 
-        # Close the trade
+        # Live mode: route the close through the gateway first
+        if self.is_live:
+            return self._execute_exit_live(trade, rate, exit_reason)
+
+        # Close the trade (simulated)
         closed_trade = self._pm.close_trade(
             trade=trade,
             rate=rate,
@@ -291,6 +319,184 @@ class OrderExecutor:
         )
 
         return closed_trade
+
+    # ==================== Live Execution (gateway-routed) ====================
+
+    def _execute_entry_live(
+        self,
+        pair: str,
+        rate: float,
+        amount: float,
+        stake_amount: float,
+        enter_tag: Optional[str],
+    ) -> Optional[LocalTrade]:
+        """
+        Send an entry order through the gateway and book the confirmed fill.
+
+        Confirmation model: send_order returns an orderid, then the order
+        state is polled via query_order until terminal or timeout. The
+        LocalTrade is created from ACTUAL fill price and quantity.
+        """
+        orderid = self._gateway.send_order({
+            "symbol": pair,
+            "direction": Direction.LONG,
+            "offset": Offset.OPEN,
+            "order_type": OrderType.MARKET,
+            "price": rate,
+            "volume": amount,
+        })
+        if not orderid:
+            logger.error(f"Live entry for {pair} rejected by gateway (no orderid)")
+            return None
+
+        order = self._wait_for_fill(orderid)
+        if order is None:
+            logger.error(
+                f"Live entry for {pair}: no order state from gateway "
+                f"(orderid={orderid}); not booking any position"
+            )
+            self._safe_cancel(orderid)
+            return None
+
+        if order.traded <= 0:
+            logger.warning(
+                f"Live entry for {pair} not filled "
+                f"(status={order.status.value}, orderid={orderid})"
+            )
+            if order.status not in _TERMINAL_STATUSES:
+                self._safe_cancel(orderid)
+            return None
+
+        if order.status == Status.PARTTRADED:
+            logger.warning(
+                f"Live entry for {pair} partially filled "
+                f"{order.traded}/{amount}; cancelling remainder and booking filled part"
+            )
+            self._safe_cancel(orderid)
+
+        fill_price = order.price if order.price > 0 else rate
+        fill_amount = order.traded
+        fill_stake = fill_price * fill_amount
+
+        trade = self._pm.open_trade(
+            pair=pair,
+            rate=fill_price,
+            amount=fill_amount,
+            stake_amount=fill_stake,
+            enter_tag=enter_tag,
+            market_type=self._market_type,
+        )
+        logger.info(
+            f"Live entry executed for {pair}: orderid={orderid}, "
+            f"price={fill_price}, amount={fill_amount}, stake={fill_stake:.4f}"
+        )
+        return trade
+
+    def _execute_exit_live(
+        self,
+        trade: LocalTrade,
+        rate: float,
+        exit_reason: str,
+    ) -> Optional[LocalTrade]:
+        """
+        Send a close order through the gateway and close the trade on fill.
+
+        Partial exit fills are treated conservatively: the remainder is
+        cancelled, an error is logged, and the trade is kept open. The
+        already-sold portion must be reconciled manually - safer than
+        booking a wrong final state.
+        """
+        orderid = self._gateway.send_order({
+            "symbol": trade.pair,
+            "direction": Direction.SHORT,
+            "offset": Offset.CLOSE,
+            "order_type": OrderType.MARKET,
+            "price": rate,
+            "volume": trade.amount,
+        })
+        if not orderid:
+            logger.error(f"Live exit for {trade.pair} rejected by gateway (no orderid)")
+            return None
+
+        order = self._wait_for_fill(orderid)
+        if order is None:
+            logger.error(
+                f"Live exit for {trade.pair}: no order state from gateway "
+                f"(orderid={orderid}); trade remains open"
+            )
+            self._safe_cancel(orderid)
+            return None
+
+        if order.traded <= 0:
+            logger.warning(
+                f"Live exit for {trade.pair} not filled "
+                f"(status={order.status.value}, orderid={orderid}); trade remains open"
+            )
+            if order.status not in _TERMINAL_STATUSES:
+                self._safe_cancel(orderid)
+            return None
+
+        if order.traded < trade.amount - 1e-12:
+            self._safe_cancel(orderid)
+            logger.error(
+                f"Live exit for {trade.pair} only partially filled "
+                f"({order.traded}/{trade.amount}, orderid={orderid}). Trade kept open; "
+                "reconcile the sold portion manually before the next exit attempt."
+            )
+            return None
+
+        fill_price = order.price if order.price > 0 else rate
+        closed_trade = self._pm.close_trade(
+            trade=trade,
+            rate=fill_price,
+            exit_reason=exit_reason,
+        )
+        logger.info(
+            f"Live exit executed for {trade.pair}: orderid={orderid}, "
+            f"price={fill_price}, reason={exit_reason}"
+        )
+        return closed_trade
+
+    def _wait_for_fill(self, orderid: str) -> Optional[OrderData]:
+        """
+        Poll gateway.query_order until terminal status or timeout.
+
+        Returns the last observed OrderData, or None if the gateway never
+        reported any state.
+        """
+        timeout = float(self._config.get("execution.order_timeout", 10.0))
+        interval = float(self._config.get("execution.order_poll_interval", 0.5))
+        deadline = time.monotonic() + timeout
+        last: Optional[OrderData] = None
+
+        while True:
+            try:
+                order = self._gateway.query_order({"orderid": orderid})
+            except Exception as e:
+                logger.warning(f"query_order failed for {orderid}: {e}")
+                order = None
+
+            if order is not None:
+                last = order
+                if order.status in _TERMINAL_STATUSES:
+                    return order
+
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    f"Order {orderid} not confirmed within {timeout}s "
+                    f"(last status: {last.status.value if last else 'unknown'})"
+                )
+                return last
+
+            time.sleep(max(0.01, interval))
+
+    def _safe_cancel(self, orderid: str) -> None:
+        """Best-effort cancel used on timeout/partial fills."""
+        try:
+            self._gateway.cancel_order({"orderid": orderid})
+            logger.info(f"Cancel requested for {orderid}")
+        except Exception as e:
+            logger.warning(f"Cancel attempt failed for {orderid}: {e}")
 
     # ==================== Trailing Stop ====================
 
