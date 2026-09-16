@@ -18,6 +18,8 @@ A quantitative trading framework compatible with [Freqtrade](https://github.com/
   - T+1/T+N settlement enforcement (A-shares cannot be sold same-day in backtests)
   - Mark-to-market equity curve with curve-based max drawdown (captures intra-trade dips)
   - Configurable fee + adverse-slippage fill model (--slippage / backtest.slippage)
+  - Structured A-share fee model: commission with per-order minimum (万2.5, min 5 CNY),
+    sell-side stamp duty and transfer fee (backtest.fees)
   - Vectorized signal computation (indicators run once per pair, ~1000x faster on long histories)
   - Accepts in-memory OHLCV data (`run(data={...})`) for programmatic use
 - **Hyperparameter Optimization** - Random search optimization with multiple loss functions

@@ -62,7 +62,9 @@ class OrderExecutor:
         self._gateway = None
 
         # Settings
-        self._fee_rate = 0.001  # Default 0.1% fee
+        self._fee_rate = 0.001  # Default 0.1% fee (flat fallback)
+        from bullseye.order.fees import FeeModel
+        self._fee_model = FeeModel.from_config(config)
         self._stake_currency = config.stake_currency
 
         # Market type from config
@@ -656,6 +658,8 @@ class OrderExecutor:
             Fee amount in stake currency
         """
         value = amount * rate
+        if self._fee_model is not None:
+            return self._fee_model.fee(value, is_sell=(order_type == "exit"))
         return value * self._fee_rate
 
     def get_total_profit(self) -> float:

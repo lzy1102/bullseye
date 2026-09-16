@@ -25,6 +25,7 @@ from bullseye.exceptions import (
 )
 from bullseye.order.position_manager import LocalTrade, PositionManager, MarketType
 from bullseye.order.order_executor import OrderExecutor
+from bullseye.order.fees import FeeModel
 from bullseye.order.settlement import SettlementType, init_settlement_detector
 from bullseye.strategy.interface import IStrategy
 from bullseye.wallets.wallets import Wallets
@@ -152,9 +153,17 @@ class BacktestEngine:
     def __init__(self, config: Optional[Config] = None):
         self._config = config or Config()
         self._fee_rate = 0.001
+        # Optional structured fee model (commission min / stamp duty / transfer)
+        self._fee_model: Optional[FeeModel] = FeeModel.from_config(self._config)
         # Adverse fill price adjustment (e.g. 0.001 = 0.1% worse on both sides)
         self._slippage_rate = 0.0
         self._data_handler = self._create_data_handler()
+
+    def _calc_fee(self, value: float, is_sell: bool) -> float:
+        """Transaction fee: structured model when configured, else flat rate."""
+        if self._fee_model is not None:
+            return self._fee_model.fee(value, is_sell)
+        return value * self._fee_rate
 
     def _create_data_handler(self):
         data_dir = self._config.get("datadir", "user_data/data")
@@ -252,7 +261,9 @@ class BacktestEngine:
         max_open_trades = max_open_trades or self._config.max_open_trades
         initial_balance = initial_balance or self._config.dry_run_wallet
         if fee is not None:
+            # Explicit flat fee overrides any structured config
             self._fee_rate = fee
+            self._fee_model = None
 
         # Slippage: explicit argument > config (backtest.slippage / slippage) > 0
         if slippage is not None:
@@ -710,7 +721,7 @@ class BacktestEngine:
                 if amount <= 0:
                     return
 
-                fee = actual_stake * self._fee_rate
+                fee = self._calc_fee(actual_stake, is_sell=False)
 
                 trade = LocalTrade(
                     pair=pair,
@@ -781,7 +792,7 @@ class BacktestEngine:
                     if amount <= 0:
                         return
 
-                    fee = actual_stake * self._fee_rate
+                    fee = self._calc_fee(actual_stake, is_sell=True)
 
                     trade = LocalTrade(
                         pair=pair,
@@ -1035,7 +1046,7 @@ class BacktestEngine:
         # Slippage: exits are market orders - longs sell lower, shorts buy back higher
         rate = self._slipped_price(rate, buy=trade.is_short)
         close_value = rate * trade.amount
-        fee_close = close_value * self._fee_rate
+        fee_close = self._calc_fee(close_value, is_sell=not trade.is_short)
 
         trade.close_date = current_date
         trade.close_rate = rate

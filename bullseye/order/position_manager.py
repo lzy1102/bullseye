@@ -420,8 +420,17 @@ class PositionManager:
 
         # Settings
         self._max_open_trades = config.max_open_trades
-        self._fee_rate = 0.001  # Default 0.1% fee
+        self._fee_rate = 0.001  # Default 0.1% fee (flat fallback)
+        # Structured fee model when configured (commission min / stamp duty)
+        from bullseye.order.fees import FeeModel
+        self._fee_model = FeeModel.from_config(config)
         self._market_type = self._get_market_type(config)
+
+    def _calc_fee(self, value: float, is_sell: bool) -> float:
+        """Transaction fee: structured model when configured, else flat rate."""
+        if self._fee_model is not None:
+            return self._fee_model.fee(value, is_sell)
+        return value * self._fee_rate
 
     def _get_market_type(self, config: Config) -> MarketType:
         """Get market type from configuration."""
@@ -487,6 +496,7 @@ class PositionManager:
         stake_amount: float,
         enter_tag: Optional[str] = None,
         market_type: Optional[MarketType] = None,
+        is_short: bool = False,
     ) -> LocalTrade:
         """
         Open a new trade.
@@ -498,6 +508,7 @@ class PositionManager:
             stake_amount: Stake currency amount
             enter_tag: Entry signal tag
             market_type: Market type (default: from config)
+            is_short: True for short positions
 
         Returns:
             The created LocalTrade
@@ -510,8 +521,8 @@ class PositionManager:
             if pair in self._trades:
                 raise ValueError(f"Trade already open for {pair}")
 
-            # Calculate fee
-            fee = stake_amount * self._fee_rate
+            # Calculate fee (open side: buy for longs, sell for shorts)
+            fee = self._calc_fee(stake_amount, is_sell=is_short)
 
             # Use provided market type or default from config
             mt = market_type or self._market_type
@@ -531,12 +542,14 @@ class PositionManager:
                 enter_tag=enter_tag,
                 max_rate=rate,
                 min_rate=rate,
+                is_short=is_short,
             )
 
             # Set initial stop loss if strategy has one
             if self._strategy and hasattr(self._strategy, 'stoploss') and self._strategy.stoploss:
                 trade.stop_loss_pct = self._strategy.stoploss
-                trade.stop_loss = rate * (1 + self._strategy.stoploss)
+                stop_multiplier = 1 - self._strategy.stoploss if is_short else 1 + self._strategy.stoploss
+                trade.stop_loss = rate * stop_multiplier
                 trade.initial_stop_loss_pct = self._strategy.stoploss
                 trade.initial_stop_loss = trade.stop_loss
 
@@ -591,9 +604,9 @@ class PositionManager:
             if trade.pair not in self._trades:
                 raise ValueError(f"No open trade found for {trade.pair}")
 
-            # Calculate closing value and fee
+            # Calculate closing value and fee (longs sell, shorts buy back)
             close_value = rate * trade.amount
-            fee = close_value * self._fee_rate
+            fee = self._calc_fee(close_value, is_sell=not trade.is_short)
 
             # Update trade
             trade.close_date = datetime.now()

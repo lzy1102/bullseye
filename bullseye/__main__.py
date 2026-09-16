@@ -169,14 +169,14 @@ def trade(ctx, dry: bool, live: bool, strategy: Optional[str], config: Optional[
 @click.option('--stake-amount', type=float, help='Stake amount per trade')
 @click.option('--initial-balance', type=float, default=1000, help='Initial balance')
 @click.option('--max-open-trades', type=int, help='Max concurrent open trades')
-@click.option('--fee', type=float, default=0.001, help='Fee rate (e.g., 0.001 for 0.1%)')
+@click.option('--fee', type=float, default=None, help='Flat fee rate (e.g., 0.001 for 0.1%); default: config, else 0.001')
 @click.option('--slippage', type=float, default=None, help='Slippage rate (e.g., 0.001 for 0.1% worse fills)')
 @click.option('--export', type=str, help='Export results to JSON file')
 @click.pass_context
 def backtesting(ctx, strategy: str, timeframe: str, timerange: Optional[str],
                 config: Optional[str], stake_amount: Optional[float],
                 initial_balance: float, max_open_trades: Optional[int],
-                fee: float, slippage: Optional[float], export: Optional[str]):
+                fee: Optional[float], slippage: Optional[float], export: Optional[str]):
     """
     Run backtesting
 
@@ -193,7 +193,10 @@ def backtesting(ctx, strategy: str, timeframe: str, timerange: Optional[str],
     if timerange:
         console.print(f"[blue]Time range:[/blue] {timerange}")
     console.print(f"[blue]Initial balance:[/blue] {initial_balance}")
-    console.print(f"[blue]Fee rate:[/blue] {fee * 100:.2f}%")
+    if fee is not None:
+        console.print(f"[blue]Fee rate:[/blue] {fee * 100:.2f}%")
+    else:
+        console.print("[blue]Fee rate:[/blue] from config")
 
     config_path = config or ctx.obj.get('config')
     try:
