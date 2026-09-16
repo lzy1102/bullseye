@@ -138,6 +138,8 @@ class BullseyeBot:
                 position_manager=self._position_manager,
                 wallets=self._wallets,
             )
+            # Wire the gateway so live mode routes real orders through it
+            self._order_executor.set_gateway(self._gateway)
             logger.debug("Order executor created")
 
             # 9. Load strategy
@@ -194,32 +196,127 @@ class BullseyeBot:
         """
         Create the appropriate gateway based on configuration.
 
+        Routing by market_type:
+        - crypto: CcxtGateway (live) or DryRunGateway(CcxtGateway) (dry run)
+        - stock:  MiniQmtGateway / DryRun wrapper in dry-run
+        - future: CtpGateway / DryRun wrapper in dry-run
+        - custom: dynamically loaded class from config `custom.gateway`
+                  (e.g. an HTTP order-bridge gateway)
+
         Returns:
             Gateway instance
         """
-        exchange_config = self._config.exchange
-        exchange_name = exchange_config.get("name", "binance")
+        market_type = self._config.market_type.lower()
+
+        real_gateway = self._create_real_gateway(market_type)
 
         if self._config.dry_run:
-            # Create real gateway for market data
-            self._real_gateway = CcxtGateway(
-                event_engine=self._event_engine,
-                exchange_name=exchange_name,
-            )
-
-            # Wrap in DryRun gateway
+            # Wrap in DryRun gateway (simulated execution, real market data)
             return DryRunGateway(
                 event_engine=self._event_engine,
-                real_gateway=self._real_gateway,
+                real_gateway=real_gateway,
                 initial_balance=self._config.dry_run_wallet,
                 stake_currency=self._config.stake_currency,
             )
-        else:
-            # Live mode - use real gateway
-            return CcxtGateway(
-                event_engine=self._event_engine,
-                exchange_name=exchange_name,
+        return real_gateway
+
+    def _create_real_gateway(self, market_type: str) -> BaseGateway:
+        """Instantiate the real (market data / execution) gateway."""
+        if market_type == "stock":
+            from bullseye.gateway.stock.miniqmt_gateway import MiniQmtGateway
+            return MiniQmtGateway(event_engine=self._event_engine)
+
+        if market_type == "future":
+            from bullseye.gateway.future.ctp_gateway import CtpGateway
+            return CtpGateway(event_engine=self._event_engine)
+
+        if market_type == "custom":
+            return self._load_custom_gateway()
+
+        # crypto / auto (default)
+        exchange_config = self._config.exchange
+        return CcxtGateway(
+            event_engine=self._event_engine,
+            exchange_name=exchange_config.get("name", "binance"),
+        )
+
+    def _load_custom_gateway(self) -> BaseGateway:
+        """
+        Load a user-provided gateway class.
+
+        Configure with:
+            market_type: custom
+            custom:
+              gateway: "my_package.my_module.MyBrokerGateway"
+        """
+        import importlib
+
+        custom_config = self._config.get("custom", {})
+        class_path = custom_config.get("gateway", "")
+        if "." not in class_path:
+            raise ValueError(
+                "custom.gateway must be a dotted path like "
+                "'my_package.my_module.MyBrokerGateway'"
             )
+
+        module_path, _, class_name = class_path.rpartition(".")
+        try:
+            module = importlib.import_module(module_path)
+        except ImportError as e:
+            raise ImportError(
+                f"Cannot import custom gateway module '{module_path}': {e}"
+            ) from e
+
+        gateway_class = getattr(module, class_name, None)
+        if gateway_class is None:
+            raise ImportError(
+                f"Custom gateway class '{class_name}' not found in '{module_path}'"
+            )
+
+        logger.info(f"Loaded custom gateway: {class_path}")
+        return gateway_class(event_engine=self._event_engine)
+
+    def _gateway_connect_kwargs(self) -> dict:
+        """
+        Build connect() kwargs appropriate for the configured market.
+
+        Stock/future/custom gateways take their own config sections instead
+        of crypto exchange credentials.
+        """
+        market_type = self._config.market_type.lower()
+
+        if market_type == "stock":
+            stock = self._config.get("stock", {})
+            return {
+                "qmt_path": stock.get("qmt_path", ""),
+                "session_id": stock.get("session_id", 0),
+                "account_id": stock.get("account_id", ""),
+            }
+
+        if market_type == "future":
+            future = self._config.get("future", {})
+            return {
+                "user_id": future.get("userid", future.get("user_id", "")),
+                "password": future.get("password", ""),
+                "broker_id": future.get("brokerid", future.get("broker_id", "9999")),
+                "td_address": future.get("td_address", ""),
+                "md_address": future.get("md_address", ""),
+                "auth_code": future.get("auth_code", ""),
+                "app_id": future.get("appid", future.get("app_id", "")),
+            }
+
+        if market_type == "custom":
+            custom = dict(self._config.get("custom", {}))
+            custom.pop("gateway", None)  # class path is not a connect parameter
+            return custom
+
+        exchange_config = self._config.exchange
+        return {
+            "api_key": exchange_config.get("key", ""),
+            "secret": exchange_config.get("secret", ""),
+            "passphrase": exchange_config.get("passphrase", ""),
+            "sandbox": exchange_config.get("sandbox", False),
+        }
 
     def _create_pairlist(self) -> List[str]:
         """
@@ -330,14 +427,8 @@ class BullseyeBot:
         logger.info("Starting Bullseye Bot...")
         self._startup_time = datetime.now()
 
-        # Connect gateway
-        exchange_config = self._config.exchange
-        self._gateway.connect(
-            api_key=exchange_config.get("key", ""),
-            secret=exchange_config.get("secret", ""),
-            passphrase=exchange_config.get("passphrase", ""),
-            sandbox=exchange_config.get("sandbox", False),
-        )
+        # Connect gateway with market-appropriate parameters
+        self._gateway.connect(**self._gateway_connect_kwargs())
 
         # Start event engine
         self._event_engine.start()
