@@ -206,6 +206,10 @@ backtest:
   # Fee rate (e.g., 0.001 = 0.1%)
   fee: 0.001
 
+  # Adverse fill slippage (e.g., 0.001 = 0.1% worse on every fill;
+  # buys fill higher, sells fill lower) - 0 disables the model
+  slippage: 0.0
+
   # Enable position stacking (multiple trades per pair)
   position_stacking: false
 

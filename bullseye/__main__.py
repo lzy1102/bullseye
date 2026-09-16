@@ -169,13 +169,14 @@ def trade(ctx, dry: bool, live: bool, strategy: Optional[str], config: Optional[
 @click.option('--stake-amount', type=float, help='Stake amount per trade')
 @click.option('--initial-balance', type=float, default=1000, help='Initial balance')
 @click.option('--max-open-trades', type=int, help='Max concurrent open trades')
-@click.option('--fee', type=float, default=0.001, help='Fee rate (e.g., 0.001 for 0.1%%)')
+@click.option('--fee', type=float, default=0.001, help='Fee rate (e.g., 0.001 for 0.1%)')
+@click.option('--slippage', type=float, default=None, help='Slippage rate (e.g., 0.001 for 0.1% worse fills)')
 @click.option('--export', type=str, help='Export results to JSON file')
 @click.pass_context
 def backtesting(ctx, strategy: str, timeframe: str, timerange: Optional[str],
                 config: Optional[str], stake_amount: Optional[float],
                 initial_balance: float, max_open_trades: Optional[int],
-                fee: float, export: Optional[str]):
+                fee: float, slippage: Optional[float], export: Optional[str]):
     """
     Run backtesting
 
@@ -183,6 +184,7 @@ def backtesting(ctx, strategy: str, timeframe: str, timerange: Optional[str],
         bullseye backtesting --strategy MyStrategy
         bullseye backtesting --strategy MyStrategy --timerange 20240101-20241231
         bullseye backtesting --strategy MyStrategy --initial-balance 10000 --fee 0.001
+        bullseye backtesting --strategy MyStrategy --slippage 0.0005
     """
     console.print("[bold green]Running backtest...[/bold green]")
     console.print(f"[blue]Strategy:[/blue] {strategy}")
@@ -214,6 +216,7 @@ def backtesting(ctx, strategy: str, timeframe: str, timerange: Optional[str],
             initial_balance=initial_balance,
             fee=fee,
             export=export,
+            slippage=slippage,
         )
 
         m = result.metrics

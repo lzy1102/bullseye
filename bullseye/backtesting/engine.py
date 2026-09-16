@@ -152,6 +152,8 @@ class BacktestEngine:
     def __init__(self, config: Optional[Config] = None):
         self._config = config or Config()
         self._fee_rate = 0.001
+        # Adverse fill price adjustment (e.g. 0.001 = 0.1% worse on both sides)
+        self._slippage_rate = 0.0
         self._data_handler = self._create_data_handler()
 
     def _create_data_handler(self):
@@ -209,6 +211,7 @@ class BacktestEngine:
         fee: Optional[float] = None,
         export: Optional[str] = None,
         data: Optional[Dict[str, Any]] = None,
+        slippage: Optional[float] = None,
     ) -> BacktestResult:
         """
         Run backtesting.
@@ -225,6 +228,7 @@ class BacktestEngine:
             fee: Fee rate (e.g., 0.001 for 0.1%)
             export: Export filename for results
             data: In-memory OHLCV data {pair: DataFrame}; skips disk loading
+            slippage: Adverse fill adjustment (e.g. 0.001 = 0.1% worse fills)
 
         Returns:
             BacktestResult with trades and metrics
@@ -249,6 +253,15 @@ class BacktestEngine:
         initial_balance = initial_balance or self._config.dry_run_wallet
         if fee is not None:
             self._fee_rate = fee
+
+        # Slippage: explicit argument > config (backtest.slippage / slippage) > 0
+        if slippage is not None:
+            self._slippage_rate = slippage
+        else:
+            configured = self._config.get(
+                "backtest.slippage", self._config.get("slippage", 0.0)
+            )
+            self._slippage_rate = float(configured or 0.0)
 
         logger.info(f"Starting backtest: strategy={strategy.__class__.__name__}, "
                      f"pairs={pairlist}, timeframe={timeframe}")
@@ -690,7 +703,10 @@ class BacktestEngine:
                 if actual_stake <= 0:
                     return
 
-                amount = actual_stake / current_rate if current_rate > 0 else 0
+                # Slippage: buys fill higher than the reference close
+                fill_rate = self._slipped_price(current_rate, buy=True)
+
+                amount = actual_stake / fill_rate if fill_rate > 0 else 0
                 if amount <= 0:
                     return
 
@@ -703,13 +719,13 @@ class BacktestEngine:
                     timeframe=timeframe,
                     market_type=MarketType.CRYPTO,
                     open_date=current_date,
-                    open_rate=current_rate,
+                    open_rate=fill_rate,
                     amount=amount,
                     stake_amount=actual_stake,
                     fee_open=fee,
                     enter_tag=enter_tag,
-                    max_rate=current_rate,
-                    min_rate=current_rate,
+                    max_rate=fill_rate,
+                    min_rate=fill_rate,
                     is_short=False,
                 )
 
@@ -717,7 +733,7 @@ class BacktestEngine:
                 stoploss = getattr(strategy, 'stoploss', 0)
                 if stoploss != 0:
                     trade.stop_loss_pct = stoploss
-                    trade.stop_loss = current_rate * (1 + stoploss)
+                    trade.stop_loss = fill_rate * (1 + stoploss)
                     trade.initial_stop_loss_pct = stoploss
                     trade.initial_stop_loss = trade.stop_loss
 
@@ -726,7 +742,7 @@ class BacktestEngine:
                 # deducting fee_open here as well would double-charge it.
                 wallets.deduct_amount(self._config.stake_currency, actual_stake)
 
-                logger.debug(f"Entry: {pair} @ {current_rate}, stake={actual_stake}")
+                logger.debug(f"Entry: {pair} @ {fill_rate}, stake={actual_stake}")
                 return
 
             # Check for short entry
@@ -758,7 +774,10 @@ class BacktestEngine:
                     if actual_stake <= 0:
                         return
 
-                    amount = actual_stake / current_rate if current_rate > 0 else 0
+                    # Slippage: shorts sell lower than the reference close
+                    fill_rate = self._slipped_price(current_rate, buy=False)
+
+                    amount = actual_stake / fill_rate if fill_rate > 0 else 0
                     if amount <= 0:
                         return
 
@@ -771,20 +790,20 @@ class BacktestEngine:
                         timeframe=timeframe,
                         market_type=MarketType.CRYPTO,
                         open_date=current_date,
-                        open_rate=current_rate,
+                        open_rate=fill_rate,
                         amount=amount,
                         stake_amount=actual_stake,
                         fee_open=fee,
                         enter_tag=enter_tag,
-                        max_rate=current_rate,
-                        min_rate=current_rate,
+                        max_rate=fill_rate,
+                        min_rate=fill_rate,
                         is_short=True,
                     )
 
                     stoploss = getattr(strategy, 'stoploss', 0)
                     if stoploss != 0:
                         trade.stop_loss_pct = stoploss
-                        trade.stop_loss = current_rate * (1 - stoploss)
+                        trade.stop_loss = fill_rate * (1 - stoploss)
                         trade.initial_stop_loss_pct = stoploss
                         trade.initial_stop_loss = trade.stop_loss
 
@@ -1013,6 +1032,8 @@ class BacktestEngine:
         closed_bt_trades: List[BacktestTrade],
     ) -> None:
         """Close a trade and record the result."""
+        # Slippage: exits are market orders - longs sell lower, shorts buy back higher
+        rate = self._slipped_price(rate, buy=trade.is_short)
         close_value = rate * trade.amount
         fee_close = close_value * self._fee_rate
 
@@ -1059,6 +1080,17 @@ class BacktestEngine:
             f"Exit: {trade.pair} @ {rate}, profit={profit_abs:.4f} "
             f"({profit_pct:.2f}%), reason={exit_reason}"
         )
+
+    def _slipped_price(self, rate: float, *, buy: bool) -> float:
+        """
+        Apply adverse slippage to a fill price.
+
+        Buys fill higher, sells fill lower - the direction that costs money.
+        With slippage 0 (default) prices are unchanged.
+        """
+        if self._slippage_rate <= 0 or rate <= 0:
+            return rate
+        return rate * (1 + self._slippage_rate) if buy else rate * (1 - self._slippage_rate)
 
     @staticmethod
     def _timeframe_to_minutes(timeframe: str) -> int:

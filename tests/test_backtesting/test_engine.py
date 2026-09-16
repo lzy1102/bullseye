@@ -114,7 +114,7 @@ def make_flat_data(pair_periods: Dict[str, int], start: str = "2024-01-01") -> D
     return data
 
 
-def run_flat_backtest(strategy_cls, data):
+def run_flat_backtest(strategy_cls, data, slippage: float = 0.0):
     """Run the backtest loop over flat in-memory data and return closed trades."""
     from bullseye.order.position_manager import PositionManager
     from bullseye.order.order_executor import OrderExecutor
@@ -140,6 +140,7 @@ def run_flat_backtest(strategy_cls, data):
 
     engine = BacktestEngine(config)
     engine._fee_rate = 0.001
+    engine._slippage_rate = slippage
     return engine._run_backtest_loop(
         strategy=strategy,
         data=data,
@@ -651,3 +652,69 @@ class TestEquityCurve:
         data = make_flat_data({"BTC/USDT": 30})
         with pytest.raises(BacktestError, match="Signal misalignment"):
             run_flat_backtest(RowDroppingStrategy, data)
+
+
+class TestSlippage:
+    """Adverse fill pricing: buys higher, sells lower, stoploss worse."""
+
+    def test_zero_slippage_preserves_prices(self):
+        data = make_flat_data({"BTC/USDT": 30})
+        trades = run_flat_backtest(ImmediateExitStrategy, data, slippage=0.0)
+        assert trades[0].open_rate == pytest.approx(100.0)
+        assert trades[0].close_rate == pytest.approx(100.0)
+
+    def test_entry_and_exit_are_slipped(self):
+        data = make_flat_data({"BTC/USDT": 30})
+        trades = run_flat_backtest(ImmediateExitStrategy, data, slippage=0.001)
+
+        trade = trades[0]
+        assert trade.open_rate == pytest.approx(100.0 * 1.001)   # buys higher
+        assert trade.close_rate == pytest.approx(100.0 * 0.999)  # sells lower
+        # Round trip loses roughly 2 * stake * slippage plus fees
+        assert trade.profit_abs < 0
+
+    def test_stoploss_fills_worse_than_stop_price(self):
+        # Price crashes through the stop level
+        data = {"BTC/USDT": pd.DataFrame({
+            "date": pd.date_range("2024-01-01", periods=40, freq="1h"),
+            "open": [100.0] * 12 + [85.0] * 28,
+            "high": [100.0] * 12 + [85.0] * 28,
+            "low": [100.0] * 12 + [85.0] * 28,
+            "close": [100.0] * 12 + [85.0] * 28,
+            "volume": [1000.0] * 40,
+        })}
+
+        class StopStrategy(FlatTestStrategy):
+            startup_candle_count = 5
+            stoploss = -0.05
+
+        trades = run_flat_backtest(StopStrategy, data, slippage=0.001)
+
+        stops = [t for t in trades if t.exit_reason == "stoploss"]
+        assert len(stops) == 1
+        trade = stops[0]
+        # Stop level derives from the slipped entry (-5% for long)
+        expected_stop = trade.open_rate * (1 - 0.05)
+        # Fill is worse than the stop level (long exits sell lower)
+        assert trade.close_rate < expected_stop
+        assert trade.close_rate == pytest.approx(expected_stop * 0.999)
+
+    def test_config_fallback_applies(self):
+        """backtest.slippage config is honored when no explicit value given."""
+        from bullseye.backtesting.engine import BacktestEngine
+
+        config = Config()
+        config.set("backtest.slippage", 0.002)
+        engine = BacktestEngine(config)
+
+        data = make_flat_data({"BTC/USDT": 20})
+        result = engine.run(
+            strategy_class=FlatTestStrategy,
+            pairlist=["BTC/USDT"],
+            timeframe="1h",
+            data=data,
+            initial_balance=1000,
+        )
+        assert engine._slippage_rate == pytest.approx(0.002)
+        assert len(result.trades) == 1
+        assert result.trades[0].open_rate == pytest.approx(100.0 * 1.002)

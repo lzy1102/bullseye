@@ -17,6 +17,7 @@ A quantitative trading framework compatible with [Freqtrade](https://github.com/
 - **Backtesting Engine** - Iterative backtesting with stoploss, trailing stop, ROI, and custom exit support
   - T+1/T+N settlement enforcement (A-shares cannot be sold same-day in backtests)
   - Mark-to-market equity curve with curve-based max drawdown (captures intra-trade dips)
+  - Configurable fee + adverse-slippage fill model (--slippage / backtest.slippage)
   - Vectorized signal computation (indicators run once per pair, ~1000x faster on long histories)
   - Accepts in-memory OHLCV data (`run(data={...})`) for programmatic use
 - **Hyperparameter Optimization** - Random search optimization with multiple loss functions
