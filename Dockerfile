@@ -53,11 +53,15 @@ WORKDIR /app
 # Copy requirements first for better caching
 COPY requirements.txt pyproject.toml ./
 
-# Install Python dependencies
+# Install Python dependencies (core + A-share datafeeds + futures;
+# xtquant/miniQMT is Windows-only and intentionally excluded — run it
+# natively on Windows or via xqshare remote instead)
 RUN python -m venv /app/venv && \
     . /app/venv/bin/activate && \
     pip install --upgrade pip setuptools wheel && \
-    pip install -r requirements.txt
+    pip install -r requirements.txt && \
+    pip install "akshare>=1.12.0" "tushare>=1.4.0" "baostock>=0.8.9" \
+        "exchange-calendars>=4.5.0" "openctp-ctp>=6.7.0"
 
 # Copy application code
 COPY bullseye/ ./bullseye/
