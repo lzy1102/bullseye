@@ -93,7 +93,9 @@ class AlwaysEnterStrategy(IStrategy):
         return dataframe
 
 
-def flat_data(periods=30, price=100.0):
+def flat_data(periods=30, price=1.0):
+    # Price 1.0: stake 100 buys exactly 100 shares = 1 lot, satisfying the
+    # A-share lot rule while keeping the fee math (value-based) unchanged.
     return {"000001.SZ": pd.DataFrame({
         "date": pd.date_range("2024-01-01", periods=periods, freq="1h"),
         "open": [price] * periods,

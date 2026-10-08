@@ -265,7 +265,13 @@ def backtesting(ctx, strategy: str, timeframe: str, timerange: Optional[str],
 # ==================== Download Data Command ====================
 
 @cli.command()
-@click.option('--exchange', '-e', type=str, help='Exchange name')
+@click.option('--exchange', '-e', type=str, help='Exchange name (crypto)')
+@click.option('--market', type=click.Choice(['crypto', 'stock']), default='crypto',
+              help='Market to download (crypto via CCXT, stock via A-share datafeed)')
+@click.option('--datafeed', type=str, default=None,
+              help='Stock datafeed: akshare (default, free), tushare, baostock')
+@click.option('--adjust', type=click.Choice(['qfq', 'hfq']), default=None,
+              help='Stock price adjustment (default: config stock.adjust or none)')
 @click.option('--pairs', '-p', type=str, help='Trading pairs (comma-separated or space-separated)')
 @click.option('--timeframes', '-t', type=str, help='Timeframes (comma-separated)')
 @click.option('--days', '-d', type=int, default=30, help='Number of days to download')
@@ -276,7 +282,8 @@ def backtesting(ctx, strategy: str, timeframe: str, timerange: Optional[str],
 @click.option('--config', '-c', type=str, help='Configuration file')
 @click.option('--dry-run', is_flag=True, help='Show what would be downloaded without downloading')
 @click.pass_context
-def download_data_cmd(ctx, exchange: Optional[str], pairs: Optional[str],
+def download_data_cmd(ctx, exchange: Optional[str], market: str, datafeed: Optional[str],
+                      adjust: Optional[str], pairs: Optional[str],
                       timeframes: Optional[str], days: int, timerange: Optional[str],
                       data_format: str, prepend: bool, erase: bool,
                       config: Optional[str], dry_run: bool):
@@ -291,6 +298,7 @@ def download_data_cmd(ctx, exchange: Optional[str], pairs: Optional[str],
         bullseye download-data --days 30 --timeframes 5m,1h
         bullseye download-data --timerange 20240101-20241231
         bullseye download-data --exchange okx --dry-run
+        bullseye download-data --market stock --datafeed akshare --pairs 000001.SZ --timeframes 5m,1d
     """
     # Import and call the actual implementation function (not the click command)
     from .commands.data_commands import _download_data_impl
@@ -305,6 +313,9 @@ def download_data_cmd(ctx, exchange: Optional[str], pairs: Optional[str],
         erase=erase,
         config=config,
         dry_run=dry_run,
+        market=market,
+        datafeed=datafeed,
+        adjust=adjust,
     )
 
 

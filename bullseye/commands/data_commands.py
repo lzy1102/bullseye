@@ -44,33 +44,174 @@ def get_data_dir(exchange: str, user_data_dir: str = "user_data") -> Path:
     return Path(user_data_dir) / "data" / exchange
 
 
+def _split_pairs(pairs: Optional[str]) -> list:
+    """Split comma- and/or space-separated pair string."""
+    if not pairs:
+        return []
+    return [p.strip() for p in pairs.replace(",", " ").split() if p.strip()]
+
+
+def _klines_to_ohlcv_df(klines) -> "object":
+    """Convert a list of KlineData to a backtest-ready OHLCV DataFrame."""
+    import pandas as pd
+
+    df = pd.DataFrame([{
+        "date": k.datetime,
+        "open": float(k.open_price),
+        "high": float(k.high_price),
+        "low": float(k.low_price),
+        "close": float(k.close_price),
+        "volume": float(k.volume),
+    } for k in klines if k.datetime is not None])
+    if df.empty:
+        return df
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.dropna(subset=["date"]).drop_duplicates(subset=["date"], keep="last")
+    return df.sort_values("date").reset_index(drop=True)
+
+
+def _save_ohlcv_df(df, data_dir, pair: str, timeframe: str, data_format: str,
+                   prepend: bool, erase: bool) -> None:
+    """Persist an OHLCV frame to user_data/data (or exchange subdir)."""
+    from pathlib import Path as _Path
+
+    data_dir = _Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{pair.replace('/', '_')}-{timeframe}.{data_format}"
+    filepath = data_dir / filename
+
+    if prepend and filepath.exists() and not df.empty:
+        try:
+            import pandas as pd
+
+            if data_format == "parquet":
+                existing = pd.read_parquet(filepath)
+            elif data_format == "feather":
+                existing = pd.read_feather(filepath)
+            else:
+                existing = pd.read_json(filepath)
+            df = pd.concat([existing, df], ignore_index=True)
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.drop_duplicates(subset=["date"], keep="last")
+            df = df.sort_values("date").reset_index(drop=True)
+        except Exception as e:
+            logger.warning(f"Could not merge with existing {filepath}: {e}")
+    elif filepath.exists() and not erase and not prepend:
+        logger.info(f"Overwriting existing {filepath}")
+
+    if data_format == 'json':
+        df.to_json(filepath, orient='records', date_format='iso')
+    elif data_format == 'feather':
+        df.to_feather(filepath)
+    elif data_format == 'parquet':
+        df.to_parquet(filepath)
+
+
+def _download_stock_data_impl(pairs_list: list, timeframes_list: list,
+                              start_date, end_date, data_format: str,
+                              prepend: bool, erase: bool, config_obj,
+                              datafeed_name: Optional[str], adjust: Optional[str],
+                              dry_run: bool):
+    """Download A-share OHLCV via configured datafeed into user_data/data."""
+    datafeed_name = (datafeed_name or "").lower() or str(
+        config_obj.get("stock.datafeed", "akshare") if config_obj else "akshare"
+    ).lower()
+    adjust = adjust or (config_obj.get("stock.adjust", None) if config_obj else None)
+    datadir = config_obj.get("datadir", "user_data/data") if config_obj else "user_data/data"
+
+    try:
+        if datafeed_name == "tushare":
+            from ..data.datafeed.tushare_datafeed import TuShareDatafeed
+            token = config_obj.get("stock.tushare_token", "") if config_obj else ""
+            datafeed = TuShareDatafeed({"token": token} if token else {})
+        elif datafeed_name == "baostock":
+            from ..data.datafeed.baostock_datafeed import BaoStockDatafeed
+            datafeed = BaoStockDatafeed()
+        else:
+            if datafeed_name != "akshare":
+                console.print(f"[yellow]Unknown datafeed '{datafeed_name}', using akshare[/yellow]")
+            from ..data.datafeed.akshare_datafeed import AKShareDatafeed
+            datafeed = AKShareDatafeed()
+    except ImportError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+
+    try:
+        datafeed.init()
+    except Exception as e:
+        console.print(f"[red]Datafeed init failed ({datafeed_name}): {e}[/red]")
+        sys.exit(1)
+
+    try:
+        supported = set(datafeed.get_supported_intervals())
+    except Exception:
+        supported = set()
+
+    console.print("[bold green]Downloading Stock Data[/bold green]")
+    console.print(f"[blue]Datafeed:[/blue] {datafeed_name}")
+    console.print(f"[blue]Pairs:[/blue] {', '.join(pairs_list)}")
+    console.print(f"[blue]Timeframes:[/blue] {', '.join(timeframes_list)}")
+    console.print(f"[blue]Date Range:[/blue] {start_date.date()} to {end_date.date()}")
+    console.print(f"[blue]Adjust:[/blue] {adjust or 'none'}")
+    console.print(f"[blue]Format:[/blue] {data_format}")
+
+    if dry_run:
+        console.print("\n[yellow]Dry run mode - no data will be downloaded[/yellow]")
+        return
+
+    for pair in pairs_list:
+        for timeframe in timeframes_list:
+            if supported and timeframe not in supported:
+                console.print(f"[yellow]  {pair} {timeframe}: not supported by "
+                              f"{datafeed_name}, skipping[/yellow]")
+                continue
+            try:
+                klines = datafeed.query_history(
+                    symbol=pair, interval=timeframe,
+                    start=start_date, end=end_date, adjust=adjust,
+                )
+            except Exception as e:
+                console.print(f"[red]  ✗ {pair} {timeframe}: {e}[/red]")
+                continue
+            if not klines:
+                console.print(f"[yellow]  {pair} {timeframe}: no data returned[/yellow]")
+                continue
+            df = _klines_to_ohlcv_df(klines)
+            if df.empty:
+                console.print(f"[yellow]  {pair} {timeframe}: empty after parsing[/yellow]")
+                continue
+            _save_ohlcv_df(df, datadir, pair, timeframe, data_format,
+                           prepend, erase)
+            console.print(f"[green]  ✓ {pair} {timeframe}: {len(df)} candles "
+                          f"({df['date'].min()} to {df['date'].max()})[/green]")
+
+    try:
+        datafeed.close()
+    except Exception:
+        pass
+    console.print("\n[green]✓ Stock data download complete![/green]")
+    console.print(f"[blue]Data saved to:[/blue] {datadir}")
+
+
 def _download_data_impl(exchange: Optional[str], pairs: Optional[str], timeframes: Optional[str],
                         days: int, timerange: Optional[str], data_format: str, prepend: bool,
-                        erase: bool, config: Optional[str], dry_run: bool):
+                        erase: bool, config: Optional[str], dry_run: bool,
+                        market: str = "crypto", datafeed: Optional[str] = None,
+                        adjust: Optional[str] = None):
     """
     Internal implementation for downloading historical market data.
     Supports pagination to download large date ranges.
+    Crypto path uses CCXT; stock path uses the configured A-share datafeed
+    (akshare/tushare/baostock) and writes backtest-ready OHLCV files.
     """
-    import time as time_module
-    try:
-        import ccxt
-    except ImportError:
-        console.print("[red]CCXT not installed. Install with: pip install ccxt[/red]")
-        sys.exit(1)
-
-    # Load configuration
+    # Load configuration first (both paths need it)
     try:
         from ..configuration import Config
         config_obj = Config(config or "config.yaml")
-        exchange = exchange or config_obj.get('exchange.name', 'binance')
-        pairs_list = pairs.split(',') if pairs else config_obj.get('pairlist', ['BTC/USDT', 'ETH/USDT'])
-        timeframes_list = timeframes.split(',') if timeframes else ['5m']
     except Exception:
-        exchange = exchange or 'binance'
-        pairs_list = pairs.split(',') if pairs else ['BTC/USDT', 'ETH/USDT']
-        timeframes_list = timeframes.split(',') if timeframes else ['5m']
+        config_obj = None
 
-    # Parse timerange
+    # Parse common date range
     if timerange:
         try:
             start_str, end_str = timerange.split('-')
@@ -82,6 +223,33 @@ def _download_data_impl(exchange: Optional[str], pairs: Optional[str], timeframe
     else:
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
+
+    if (market or "crypto").lower() == "stock":
+        default_pairs = (config_obj.get("stock.pairs", []) if config_obj else []) or []
+        pairs_list = _split_pairs(pairs) or default_pairs or ["000001.SZ"]
+        timeframes_list = [t.strip() for t in (timeframes or "1d").split(",") if t.strip()]
+        _download_stock_data_impl(
+            pairs_list, timeframes_list, start_date, end_date,
+            data_format, prepend, erase, config_obj, datafeed, adjust, dry_run,
+        )
+        return
+
+    import time as time_module
+    try:
+        import ccxt
+    except ImportError:
+        console.print("[red]CCXT not installed. Install with: pip install ccxt[/red]")
+        sys.exit(1)
+
+    # Configuration already loaded above; resolve crypto defaults.
+    try:
+        exchange = exchange or (config_obj.get('exchange.name', 'binance') if config_obj else 'binance')
+        pairs_list = _split_pairs(pairs) or (config_obj.get('pairlist', ['BTC/USDT', 'ETH/USDT']) if config_obj else ['BTC/USDT', 'ETH/USDT'])
+        timeframes_list = [t.strip() for t in (timeframes or '5m').split(',') if t.strip()]
+    except Exception:
+        exchange = exchange or 'binance'
+        pairs_list = _split_pairs(pairs) or ['BTC/USDT', 'ETH/USDT']
+        timeframes_list = [t.strip() for t in (timeframes or '5m').split(',') if t.strip()]
 
     console.print("[bold green]Downloading Market Data[/bold green]")
     console.print(f"[blue]Exchange:[/blue] {exchange}")
@@ -212,8 +380,14 @@ def _download_data_impl(exchange: Optional[str], pairs: Optional[str], timeframe
 
 
 @click.command(name='download-data')
-@click.option('--exchange', '-e', type=str, help='Exchange name')
-@click.option('--pairs', '-p', type=str, help='Trading pairs (comma-separated)')
+@click.option('--exchange', '-e', type=str, help='Exchange name (crypto)')
+@click.option('--market', type=click.Choice(['crypto', 'stock']), default='crypto',
+              help='Market to download (crypto via CCXT, stock via A-share datafeed)')
+@click.option('--datafeed', type=str, default=None,
+              help='Stock datafeed: akshare (default, free), tushare, baostock')
+@click.option('--adjust', type=click.Choice(['qfq', 'hfq']), default=None,
+              help='Stock price adjustment (default: config stock.adjust or none)')
+@click.option('--pairs', '-p', type=str, help='Trading pairs (comma/space-separated)')
 @click.option('--timeframes', '-t', type=str, help='Timeframes (comma-separated)')
 @click.option('--days', '-d', type=int, default=30, help='Number of days to download')
 @click.option('--timerange', type=str, help='Time range (e.g., 20240101-20241231)')
@@ -222,7 +396,8 @@ def _download_data_impl(exchange: Optional[str], pairs: Optional[str], timeframe
 @click.option('--erase', is_flag=True, help='Erase existing data')
 @click.option('--config', '-c', type=str, help='Configuration file')
 @click.option('--dry-run', is_flag=True, help='Show what would be downloaded without downloading')
-def download_data(exchange: Optional[str], pairs: Optional[str], timeframes: Optional[str],
+def download_data(exchange: Optional[str], market: str, datafeed: Optional[str],
+                  adjust: Optional[str], pairs: Optional[str], timeframes: Optional[str],
                   days: int, timerange: Optional[str], data_format: str, prepend: bool,
                   erase: bool, config: Optional[str], dry_run: bool):
     """
@@ -235,6 +410,8 @@ def download_data(exchange: Optional[str], pairs: Optional[str], timeframes: Opt
         bullseye download-data --days 30 --timeframes 5m,1h
         bullseye download-data --timerange 20240101-20241231
         bullseye download-data --exchange binance --dry-run
+        bullseye download-data --market stock --datafeed akshare --pairs 000001.SZ,600000.SH --timeframes 5m,1d
+        bullseye download-data --market stock --datafeed baostock --pairs 000001.SZ --timeframes 5m --adjust qfq
     """
     _download_data_impl(
         exchange=exchange,
@@ -247,6 +424,9 @@ def download_data(exchange: Optional[str], pairs: Optional[str], timeframes: Opt
         erase=erase,
         config=config,
         dry_run=dry_run,
+        market=market,
+        datafeed=datafeed,
+        adjust=adjust,
     )
 
 

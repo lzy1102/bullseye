@@ -114,20 +114,21 @@ def make_flat_data(pair_periods: Dict[str, int], start: str = "2024-01-01") -> D
     return data
 
 
-def run_flat_backtest(strategy_cls, data, slippage: float = 0.0):
+def run_flat_backtest(strategy_cls, data, slippage: float = 0.0,
+                      stake_amount: float = 100, initial_balance: float = 1000):
     """Run the backtest loop over flat in-memory data and return closed trades."""
     from bullseye.order.position_manager import PositionManager
     from bullseye.order.order_executor import OrderExecutor
     from bullseye.wallets.wallets import Wallets
 
     config = Config()
-    config.set("dry_run_wallet", 1000)
-    config.set("stake_amount", 100)
+    config.set("dry_run_wallet", initial_balance)
+    config.set("stake_amount", stake_amount)
     config.set("max_open_trades", 1)
 
     strategy = strategy_cls()
     pairlist = list(data.keys())
-    wallets = Wallets(config, initial_balance=1000)
+    wallets = Wallets(config, initial_balance=initial_balance)
     position_manager = PositionManager(config, wallets)
     position_manager.set_strategy(strategy)
     order_executor = OrderExecutor(config, position_manager, wallets)
@@ -151,8 +152,8 @@ def run_flat_backtest(strategy_cls, data, slippage: float = 0.0):
         order_executor=order_executor,
         bt_dp=bt_dp,
         max_open_trades=1,
-        stake_amount=100,
-        initial_balance=1000,
+        stake_amount=stake_amount,
+        initial_balance=initial_balance,
     )
 
 
@@ -393,8 +394,14 @@ class TestSettlementRestriction:
 
     def test_t1_stock_exit_blocked_until_settlement_date(self):
         """A-share pair: exit signals before the settlement date must be ignored."""
+        # Stake 20000 @ flat 100 = 200 shares = 2 lots (A-share rule;
+        # note tradable_balance_ratio 0.99 shaves available, so headroom
+        # above exactly 1 lot is required).
         data = make_flat_data({"000001.SZ": 80})
-        trades = run_flat_backtest(SingleTradeExitSignalStrategy, data)
+        trades = run_flat_backtest(
+            SingleTradeExitSignalStrategy, data,
+            stake_amount=20000, initial_balance=100000,
+        )
 
         assert len(trades) == 1
         trade = trades[0]
@@ -725,3 +732,199 @@ class TestSlippage:
         assert engine._slippage_rate == pytest.approx(0.002)
         assert len(result.trades) == 1
         assert result.trades[0].open_rate == pytest.approx(100.0 * 1.002)
+
+
+class TestAshareTradingRules:
+    """A-share lot-size (100 shares) and limit-up/down fill rules."""
+
+    def test_below_one_lot_rejected(self):
+        # Stake 100 @ 100 = 1 share < 1 lot -> no trade for stocks...
+        data = make_flat_data({"000001.SZ": 30})
+        trades = run_flat_backtest(FlatTestStrategy, data,
+                                   stake_amount=100, initial_balance=1000)
+        assert len(trades) == 0
+        # ...while the same stake still trades crypto.
+        data = make_flat_data({"BTC/USDT": 30})
+        trades = run_flat_backtest(FlatTestStrategy, data,
+                                   stake_amount=100, initial_balance=1000)
+        assert len(trades) == 1
+
+    def test_lot_rounding_down(self):
+        # Stake 25000 @ 100 = 250 shares -> 200 (2 lots), stake 20000.
+        data = make_flat_data({"000001.SZ": 30})
+        trades = run_flat_backtest(FlatTestStrategy, data,
+                                   stake_amount=25000,
+                                   initial_balance=100000)
+        assert len(trades) == 1
+        assert trades[0].amount == pytest.approx(200.0)
+        assert trades[0].stake_amount == pytest.approx(20000.0)
+
+    def test_limit_up_entry_skipped(self):
+        # Day opens flat then gaps to limit-up (100 -> 110): buys rejected.
+        dates = pd.date_range("2024-01-01", periods=30, freq="1h")
+        closes = [100.0] * 12 + [110.0] * 18
+        data = {"000001.SZ": pd.DataFrame({
+            "date": dates, "open": closes,
+            "high": closes, "low": closes, "close": closes,
+            "volume": [1000.0] * 30,
+        })}
+        trades = run_flat_backtest(FlatTestStrategy, data,
+                                   stake_amount=20000,
+                                   initial_balance=100000)
+        # Entries only before the limit-up lock; nothing opens at 110.
+        assert all(t.open_rate < 110.0 for t in trades)
+
+    def test_limit_down_exit_blocked(self):
+        # Open flat, then lock at limit-down (100 -> 90) with exit
+        # signals firing: the position cannot be sold into the lock.
+        dates = pd.date_range("2024-01-01", periods=40, freq="1h")
+        closes = [100.0] * 12 + [90.0] * 28
+        data = {"000001.SZ": pd.DataFrame({
+            "date": dates, "open": closes,
+            "high": closes, "low": closes, "close": closes,
+            "volume": [1000.0] * 40,
+        })}
+        trades = run_flat_backtest(ImmediateExitStrategy, data,
+                                   stake_amount=20000,
+                                   initial_balance=100000)
+        assert trades
+        locked_date = dates[12]  # first 90 candle: 10% gap from prev 100
+        # No signal-driven fill may happen on the locked candle itself.
+        assert all(
+            not (t.exit_date == locked_date and t.exit_reason == "exit_signal")
+            for t in trades
+        )
+        # The position open at 100 is carried through the lock into 90.
+        assert any(
+            t.open_rate == pytest.approx(100.0)
+            and t.close_rate == pytest.approx(90.0)
+            for t in trades
+        )
+
+    def test_price_limit_ratio(self):
+        from bullseye.backtesting.engine import BacktestEngine
+
+        assert BacktestEngine._price_limit_ratio("000001.SZ") == pytest.approx(0.10)
+        assert BacktestEngine._price_limit_ratio("300001.SZ") == pytest.approx(0.20)
+        assert BacktestEngine._price_limit_ratio("688001.SH") == pytest.approx(0.20)
+        assert BacktestEngine._price_limit_ratio("BTC/USDT") == pytest.approx(0.10)
+
+    def test_rules_opt_out(self):
+        from bullseye.backtesting.engine import BacktestEngine
+        from bullseye.order.position_manager import PositionManager
+        from bullseye.order.order_executor import OrderExecutor
+        from bullseye.wallets.wallets import Wallets
+        from bullseye.backtesting.engine import BacktestDataProvider
+
+        config = Config()
+        config.set("dry_run_wallet", 1000)
+        config.set("stake_amount", 100)
+        config.set("max_open_trades", 1)
+        config.set("backtest.enforce_lot_size", False)
+        data = make_flat_data({"000001.SZ": 30})
+        strategy = FlatTestStrategy()
+        wallets = Wallets(config, initial_balance=1000)
+        pm = PositionManager(config, wallets)
+        pm.set_strategy(strategy)
+        oe = OrderExecutor(config, pm, wallets)
+        oe.set_strategy(strategy)
+        bt_dp = BacktestDataProvider(data, ["000001.SZ"])
+        strategy.dp = bt_dp
+        strategy.wallets = wallets
+        strategy.config = config.to_dict()
+        engine = BacktestEngine(config)
+        engine._fee_rate = 0.001
+        trades = engine._run_backtest_loop(
+            strategy=strategy, data=data, pairlist=["000001.SZ"],
+            timeframe="1h", wallets=wallets, position_manager=pm,
+            order_executor=oe, bt_dp=bt_dp, max_open_trades=1,
+            stake_amount=100, initial_balance=1000,
+        )
+        assert len(trades) == 1
+
+
+class TestStockDownloadHelpers:
+    """KlineData -> OHLCV conversion and stock download wiring."""
+
+    def test_klines_to_ohlcv_df(self):
+        from datetime import datetime as _dt
+        from bullseye.commands.data_commands import _klines_to_ohlcv_df
+        from bullseye.trader.object.kline import KlineData
+
+        klines = [
+            KlineData(symbol="000001.SZ", interval="5m",
+                      datetime=_dt(2024, 1, 2, 10, 0),
+                      open_price=10.0, high_price=10.5,
+                      low_price=9.9, close_price=10.2, volume=1000.0),
+            KlineData(symbol="000001.SZ", interval="5m",
+                      datetime=_dt(2024, 1, 2, 10, 5),
+                      open_price=10.2, high_price=10.3,
+                      low_price=10.0, close_price=10.1, volume=800.0),
+        ]
+        df = _klines_to_ohlcv_df(klines)
+        assert list(df.columns) == ["date", "open", "high", "low", "close", "volume"]
+        assert len(df) == 2
+        assert df.iloc[0]["close"] == pytest.approx(10.2)
+
+    def test_download_stock_dry_run(self, tmp_path, monkeypatch):
+        from bullseye.commands.data_commands import _download_data_impl
+        from bullseye.configuration.config import Config
+
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(
+            "datadir: user_data/data\nstock:\n  datafeed: akshare\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        # Dry run must not touch the network.
+        _download_data_impl(
+            exchange=None, pairs="000001.SZ", timeframes="5m", days=5,
+            timerange=None, data_format="parquet", prepend=False, erase=False,
+            config=str(cfg_path), dry_run=True, market="stock",
+            datafeed="akshare", adjust="qfq",
+        )
+
+    def test_download_stock_with_stub_feed(self, tmp_path, monkeypatch):
+        import pandas as pd  # noqa: F401
+        from datetime import datetime as _dt
+        from bullseye.commands import data_commands as dc
+        from bullseye.trader.object.kline import KlineData
+
+        class StubFeed:
+            def init(self):
+                pass
+
+            def get_supported_intervals(self):
+                return ["5m", "1d"]
+
+            def query_history(self, symbol, interval, start=None, end=None,
+                              limit=None, adjust=None):
+                assert symbol == "000001.SZ"
+                return [KlineData(
+                    symbol=symbol, interval=interval,
+                    datetime=_dt(2024, 1, 2, 10, 0),
+                    open_price=10.0, high_price=10.5, low_price=9.9,
+                    close_price=10.2, volume=1000.0)]
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            "bullseye.data.datafeed.akshare_datafeed.AKShareDatafeed",
+            StubFeed,
+        )
+
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text("datadir: user_data/data\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        dc._download_data_impl(
+            exchange=None, pairs="000001.SZ", timeframes="5m", days=5,
+            timerange="20240101-20240105", data_format="parquet",
+            prepend=False, erase=False, config=str(cfg_path), dry_run=False,
+            market="stock", datafeed="akshare", adjust=None,
+        )
+        saved = tmp_path / "user_data" / "data" / "000001.SZ-5m.parquet"
+        assert saved.exists()
+        df = pd.read_parquet(saved)
+        assert len(df) == 1
+        assert df.iloc[0]["close"] == pytest.approx(10.2)

@@ -677,6 +677,8 @@ class BacktestEngine:
                 current_rate = prices["close"][idx]
                 current_high = prices["high"][idx]
                 current_low = prices["low"][idx]
+                closes = prices["close"]
+                prev_close = closes[idx - 1] if idx > 0 else current_rate
                 signal_row = _ArrayRow(signal_arrays[pair], idx)
                 pair_last_index[pair] = idx
 
@@ -690,6 +692,7 @@ class BacktestEngine:
                         current_rate=current_rate,
                         current_high=current_high,
                         current_low=current_low,
+                        prev_close=prev_close,
                         current_date=current_date,
                         position_manager=position_manager,
                         wallets=wallets,
@@ -704,6 +707,7 @@ class BacktestEngine:
                         strategy=strategy,
                         signal_row=signal_row,
                         current_rate=current_rate,
+                        prev_close=prev_close,
                         current_date=current_date,
                         timeframe=timeframe,
                         wallets=wallets,
@@ -790,6 +794,65 @@ class BacktestEngine:
         if re.match(r"^[A-Z]+\d+@[A-Z]+$", upper) or re.match(r"^\d+@[A-Z]+$", upper):
             return MarketType.FUTURE
         return MarketType.CRYPTO
+
+    # ==================== A-share trading rules ====================
+
+    def _enforce_lot_size(self) -> bool:
+        """Whether 100-share lot rounding applies (default on, opt-out)."""
+        try:
+            return bool(self._config.get("backtest.enforce_lot_size", True))
+        except Exception:
+            return True
+
+    def _enforce_price_limits(self) -> bool:
+        """Whether limit-up/down fill blocking applies (default on)."""
+        try:
+            return bool(self._config.get("backtest.enforce_price_limits", True))
+        except Exception:
+            return True
+
+    @staticmethod
+    def _price_limit_ratio(pair: str) -> float:
+        """Daily price-limit ratio for an A-share code.
+
+        Main board 10%; ChiNext (30xxxx) / STAR (688xxx) 20%. ST/*ST
+        (5%) cannot be identified from the code alone — override via
+        `backtest.price_limit_overrides: {"000001.SZ": 0.05}` when needed.
+        """
+        import re
+
+        upper = (pair or "").upper()
+        m = re.match(r"^(\d{6})(\.(SZ|SH|BJ))?$", upper)
+        if m and (m.group(1).startswith("30") or m.group(1).startswith("688")):
+            return 0.20
+        return 0.10
+
+    def _limit_ratio_for(self, pair: str) -> float:
+        try:
+            overrides = self._config.get("backtest.price_limit_overrides", {}) or {}
+            if pair in overrides:
+                return float(overrides[pair])
+            upper = (pair or "").upper()
+            for key, value in overrides.items():
+                if str(key).upper() == upper:
+                    return float(value)
+        except Exception:
+            pass
+        return self._price_limit_ratio(pair)
+
+    @staticmethod
+    def _locked_at_limit_up(current_rate: float, prev_close: float, ratio: float) -> bool:
+        """True when a buy fill at `current_rate` is unobtainable (limit-up)."""
+        if not prev_close or prev_close <= 0 or current_rate <= 0:
+            return False
+        return current_rate >= prev_close * (1 + ratio) * 0.999
+
+    @staticmethod
+    def _locked_at_limit_down(current_rate: float, prev_close: float, ratio: float) -> bool:
+        """True when a sell fill at `current_rate` is unobtainable (limit-down)."""
+        if not prev_close or prev_close <= 0 or current_rate <= 0:
+            return False
+        return current_rate <= prev_close * (1 - ratio) * 1.001
 
     def _net_profit_ratio(self, trade: "LocalTrade", current_rate: float) -> float:
         """Net (fee-aware) profit ratio at a hypothetical exit price.
@@ -912,17 +975,32 @@ class BacktestEngine:
         is_short: bool, current_date: datetime, current_rate: float,
         wallets: Wallets, open_trades: Dict[str, LocalTrade],
         leverage: float,
-    ) -> None:
+    ) -> Optional[LocalTrade]:
         amount = actual_stake / fill_rate if fill_rate > 0 else 0
         if amount <= 0:
-            return
+            return None
+        market_type = self._detect_market_type(pair)
+        # A-share lot rule: buys in multiples of 100 shares. Round down;
+        # below one lot the order is rejected by the broker.
+        if market_type == MarketType.STOCK and not is_short and self._enforce_lot_size():
+            import math
+
+            lots = math.floor(amount / 100)
+            if lots < 1:
+                logger.debug(
+                    f"Entry skipped for {pair}: {amount:.2f} shares < 1 lot "
+                    f"(stake={actual_stake})"
+                )
+                return None
+            amount = lots * 100
+            actual_stake = amount * fill_rate
         fee = self._calc_fee(actual_stake, is_sell=is_short)
         trade = LocalTrade(
             pair=pair,
             exchange=self._config.exchange_name,
             strategy=strategy.__class__.__name__,
             timeframe=timeframe,
-            market_type=self._detect_market_type(pair),
+            market_type=market_type,
             open_date=current_date,
             open_rate=fill_rate,
             amount=amount,
@@ -946,6 +1024,7 @@ class BacktestEngine:
         # deducting fee_open here as well would double-charge it.
         wallets.deduct_amount(self._config.stake_currency, actual_stake)
         logger.debug(f"Entry: {pair} @ {fill_rate}, stake={actual_stake}")
+        return trade
 
     def _check_entry(
         self,
@@ -953,6 +1032,7 @@ class BacktestEngine:
         strategy: IStrategy,
         signal_row,
         current_rate: float,
+        prev_close: float,
         current_date: datetime,
         timeframe: str,
         wallets: Wallets,
@@ -967,6 +1047,17 @@ class BacktestEngine:
         _run_backtest_loop); no indicator recomputation happens here.
         """
         try:
+            # A-share limit-up: no sellers at the close fill — skip buys.
+            if (
+                self._detect_market_type(pair) == MarketType.STOCK
+                and self._enforce_price_limits()
+                and self._locked_at_limit_up(
+                    current_rate, prev_close, self._limit_ratio_for(pair)
+                )
+            ):
+                logger.debug(f"Entry skipped for {pair}: locked at limit-up")
+                return
+
             # Check for long entry
             enter_long = signal_row.get("enter_long", 0)
             enter_tag = signal_row.get("enter_tag", None)
@@ -1103,6 +1194,7 @@ class BacktestEngine:
         current_rate: float,
         current_high: float,
         current_low: float,
+        prev_close: float,
         current_date: datetime,
         position_manager: PositionManager,
         wallets: Wallets,
@@ -1140,6 +1232,20 @@ class BacktestEngine:
             logger.debug(
                 f"Exit blocked for {trade.pair}: T+1 settlement until {settlement_date}"
             )
+            return
+
+        # 0a. A-share limit-down: no buyers at the close fill — hold the
+        # position (all exit paths blocked; end-of-data force_exit still
+        # applies for accounting). Only for long stock positions.
+        if (
+            not trade.is_short
+            and trade.market_type == MarketType.STOCK
+            and self._enforce_price_limits()
+            and self._locked_at_limit_down(
+                current_rate, prev_close, self._limit_ratio_for(trade.pair)
+            )
+        ):
+            logger.debug(f"Exit blocked for {trade.pair}: locked at limit-down")
             return
 
         # 0b. Liquidation: leveraged loss wiping margin forces exit.
