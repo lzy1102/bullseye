@@ -270,8 +270,8 @@ def backtesting(ctx, strategy: str, timeframe: str, timerange: Optional[str],
               help='Market to download (crypto via CCXT, stock via A-share datafeed)')
 @click.option('--datafeed', type=str, default=None,
               help='Stock datafeed: akshare (default, free), tushare, baostock')
-@click.option('--adjust', type=click.Choice(['qfq', 'hfq']), default=None,
-              help='Stock price adjustment (default: config stock.adjust or none)')
+@click.option('--adjust', type=click.Choice(['qfq', 'hfq', 'none']), default=None,
+              help='Stock price adjustment (default: config stock.adjust, else qfq)')
 @click.option('--pairs', '-p', type=str, help='Trading pairs (comma-separated or space-separated)')
 @click.option('--timeframes', '-t', type=str, help='Timeframes (comma-separated)')
 @click.option('--days', '-d', type=int, default=30, help='Number of days to download')

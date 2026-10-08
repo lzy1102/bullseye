@@ -129,6 +129,25 @@ class BaseDatafeed(ABC):
         """
         return self.query_history(symbol, interval, limit=limit)
 
+    def get_dividends(
+        self,
+        symbol: str,
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get cash-dividend calendar for a stock.
+
+        Returns a list of dicts: {"ex_date": datetime, "cash_div": float}
+        where cash_div is pre-tax cash per share in stake currency.
+
+        The default implementation returns [] (source has no dividend
+        calendar). Backtests credit these on ex-dates; an empty calendar
+        simply disables dividend cash. Users may also hand-write the
+        `{pair}.dividends.json` file the downloader produces.
+        """
+        return []
+
     @abstractmethod
     def get_supported_intervals(self) -> List[str]:
         """

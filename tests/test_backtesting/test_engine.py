@@ -884,6 +884,62 @@ class TestStockDownloadHelpers:
             datafeed="akshare", adjust="qfq",
         )
 
+    def test_download_defaults_to_qfq(self, tmp_path, monkeypatch):
+        from datetime import datetime as _dt
+        from bullseye.commands import data_commands as dc
+        from bullseye.trader.object.kline import KlineData
+
+        seen = {}
+
+        class RecordingFeed:
+            def init(self):
+                pass
+
+            def get_supported_intervals(self):
+                return ["5m"]
+
+            def query_history(self, symbol, interval, start=None, end=None,
+                              limit=None, adjust=None):
+                seen["adjust"] = adjust
+                return [KlineData(
+                    symbol=symbol, interval=interval,
+                    datetime=_dt(2024, 1, 2, 10, 0),
+                    open_price=10.0, high_price=10.5, low_price=9.9,
+                    close_price=10.2, volume=1000.0)]
+
+            def get_dividends(self, symbol, start=None, end=None):
+                return []
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            "bullseye.data.datafeed.akshare_datafeed.AKShareDatafeed",
+            RecordingFeed,
+        )
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text("datadir: user_data/data\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        dc._download_data_impl(
+            exchange=None, pairs="000001.SZ", timeframes="5m", days=5,
+            timerange=None, data_format="json",
+            prepend=False, erase=False, config=str(cfg_path), dry_run=False,
+            market="stock", datafeed="akshare", adjust=None,
+        )
+        assert seen.get("adjust") == "qfq"
+        import json as _json
+
+        meta = _json.loads(
+            (tmp_path / "user_data" / "data" / "000001.SZ-5m.meta.json")
+            .read_text(encoding="utf-8")
+        )
+        assert meta["adjust"] == "qfq"
+        divs = _json.loads(
+            (tmp_path / "user_data" / "data" / "000001.SZ.dividends.json")
+            .read_text(encoding="utf-8")
+        )
+        assert divs["symbol"] == "000001.SZ"
+
     def test_download_stock_with_stub_feed(self, tmp_path, monkeypatch):
         import pandas as pd  # noqa: F401
         from datetime import datetime as _dt
@@ -928,3 +984,150 @@ class TestStockDownloadHelpers:
         df = pd.read_parquet(saved)
         assert len(df) == 1
         assert df.iloc[0]["close"] == pytest.approx(10.2)
+
+
+class TestAdjustValidation:
+    """Stock file adjustment口径 must match the declared stock.adjust."""
+
+    def _write_stock_file(self, tmp_path, pair="000001.SZ", timeframe="1d",
+                          adjust="qfq", price=10.0):
+        import json as _json
+        from bullseye.commands.data_commands import _save_ohlcv_df
+
+        dates = pd.date_range("2024-01-01", periods=30, freq="1h")
+        df = pd.DataFrame({
+            "date": dates, "open": price, "high": price, "low": price,
+            "close": price, "volume": [1000.0] * 30,
+        })
+        datadir = tmp_path / "user_data" / "data"
+        meta = None if adjust == "legacy" else {"adjust": adjust,
+                                                "datafeed": "test"}
+        _save_ohlcv_df(df, str(datadir), pair, timeframe, "json",
+                       prepend=False, erase=True, meta=meta)
+        return datadir
+
+    def _engine(self, tmp_path, declared):
+        config = Config()
+        config.set("datadir", str(tmp_path / "user_data" / "data"))
+        config.set("stock.adjust", declared)
+        config.set("dry_run_wallet", 100000)
+        config.set("stake_amount", 20000)
+        config.set("max_open_trades", 1)
+        return BacktestEngine(config)
+
+    def test_matching_adjust_passes(self, tmp_path):
+        self._write_stock_file(tmp_path, adjust="qfq")
+        engine = self._engine(tmp_path, "qfq")
+        result = engine.run(
+            strategy_class=FlatTestStrategy, pairlist=["000001.SZ"],
+            timeframe="1d", initial_balance=100000,
+        )
+        assert result.metrics.total_trades == 1
+
+    def test_mismatch_raises(self, tmp_path):
+        from bullseye.exceptions import BacktestError
+
+        self._write_stock_file(tmp_path, adjust=None)
+        engine = self._engine(tmp_path, "qfq")
+        with pytest.raises(BacktestError, match="Adjustment mismatch"):
+            engine.run(
+                strategy_class=FlatTestStrategy, pairlist=["000001.SZ"],
+                timeframe="1d", initial_balance=100000,
+            )
+
+    def test_legacy_file_warns_only(self, tmp_path, caplog):
+        import logging as _logging
+
+        self._write_stock_file(tmp_path, adjust="legacy")
+        engine = self._engine(tmp_path, "qfq")
+        with caplog.at_level(_logging.WARNING):
+            result = engine.run(
+                strategy_class=FlatTestStrategy, pairlist=["000001.SZ"],
+                timeframe="1d", initial_balance=100000,
+            )
+        assert result.metrics.total_trades == 1
+        assert any("no .meta.json sidecar" in r.message for r in caplog.records)
+
+    def test_crypto_untouched(self, tmp_path):
+        self._write_stock_file(tmp_path, pair="BTC/USDT", timeframe="1h",
+                               adjust=None)
+        config = Config()
+        config.set("datadir", str(tmp_path / "user_data" / "data"))
+        engine = BacktestEngine(config)
+        result = engine.run(
+            strategy_class=FlatTestStrategy, pairlist=["BTC/USDT"],
+            timeframe="1h", initial_balance=1000,
+        )
+        assert result.metrics.total_trades == 1
+
+
+class TestDividends:
+    """Ex-date cash dividends are credited to holders of record."""
+
+    def test_dividend_cash_credited(self):
+        dates = pd.date_range("2024-01-01", periods=30, freq="1h")
+        data = {"000001.SZ": pd.DataFrame({
+            "date": dates, "open": [10.0] * 30, "high": [10.0] * 30,
+            "low": [10.0] * 30, "close": [10.0] * 30,
+            "volume": [1000.0] * 30,
+        })}
+        ex_date = dates[15].date().isoformat()
+        config = Config()
+        config.set("dry_run_wallet", 100000)
+        config.set("stake_amount", 20000)
+        config.set("max_open_trades", 1)
+        engine = BacktestEngine(config)
+        result = engine.run(
+            strategy_class=FlatTestStrategy, pairlist=["000001.SZ"],
+            timeframe="1h", data=data, initial_balance=100000,
+            dividends={"000001.SZ": [{"ex_date": ex_date, "cash_div": 0.5}]},
+        )
+        # 2000 shares (20000/10) x 0.5 x (1 - 0.1 tax) = 900.
+        assert result.config["dividends_paid"] == pytest.approx(900.0)
+        assert result.metrics.total_profit == pytest.approx(
+            result.trades[0].profit_abs + 900.0
+        )
+
+    def test_dividend_entries_parsed(self):
+        from bullseye.backtesting.engine import BacktestEngine as _E
+
+        entries = _E._parse_dividend_entries([
+            {"ex_date": "2024-06-15", "cash_div": 0.5},
+            {"ex_date": None, "cash_div": 1.0},
+            {"ex_date": "bad-date", "cash_div": 1.0},
+            {"ex_date": "2024-06-16", "cash_div": 0},
+        ])
+        assert len(entries) == 1
+        assert entries[0][1] == pytest.approx(0.5)
+
+
+class TestTuShareDividends:
+    """TuShare dividend calendar parsing (stubbed pro API, no network)."""
+
+    def test_get_dividends(self):
+        from bullseye.data.datafeed.tushare_datafeed import TuShareDatafeed
+
+        feed = TuShareDatafeed.__new__(TuShareDatafeed)
+
+        class FakePro:
+            def dividend(self, **kwargs):
+                assert kwargs["ts_code"] == "000001.SZ"
+                return pd.DataFrame([
+                    {"ts_code": "000001.SZ", "div_proc": "实施",
+                     "ex_date": "20240615", "cash_div": 0.5},
+                    {"ts_code": "000001.SZ", "div_proc": "预案",
+                     "ex_date": None, "cash_div": 0.3},
+                    {"ts_code": "000001.SZ", "div_proc": "实施",
+                     "ex_date": "20230615", "cash_div": 0.0},
+                ])
+
+        feed._ts_pro = FakePro()
+        feed._ts = None
+        divs = TuShareDatafeed.get_dividends(feed, "000001.SZ")
+        assert len(divs) == 1
+        assert divs[0]["cash_div"] == pytest.approx(0.5)
+
+    def test_base_returns_empty(self):
+        from bullseye.data.datafeed.base import BaseDatafeed
+
+        assert BaseDatafeed.get_dividends(object(), "000001.SZ") == []

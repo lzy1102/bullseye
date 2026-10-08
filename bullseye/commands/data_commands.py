@@ -71,13 +71,22 @@ def _klines_to_ohlcv_df(klines) -> "object":
 
 
 def _save_ohlcv_df(df, data_dir, pair: str, timeframe: str, data_format: str,
-                   prepend: bool, erase: bool) -> None:
-    """Persist an OHLCV frame to user_data/data (or exchange subdir)."""
+                   prepend: bool, erase: bool,
+                   meta: Optional[dict] = None) -> None:
+    """Persist an OHLCV frame to user_data/data (or exchange subdir).
+
+    When `meta` is given (e.g. {"adjust": "qfq", "datafeed": "akshare"}),
+    a `{pair}-{timeframe}.meta.json` sidecar is written alongside so
+    backtests can verify the adjustment口径 instead of silently mixing
+    qfq with unadjusted files.
+    """
+    import json as _json
     from pathlib import Path as _Path
 
     data_dir = _Path(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{pair.replace('/', '_')}-{timeframe}.{data_format}"
+    pair_filename = pair.replace('/', '_')
+    filename = f"{pair_filename}-{timeframe}.{data_format}"
     filepath = data_dir / filename
 
     if prepend and filepath.exists() and not df.empty:
@@ -106,17 +115,40 @@ def _save_ohlcv_df(df, data_dir, pair: str, timeframe: str, data_format: str,
     elif data_format == 'parquet':
         df.to_parquet(filepath)
 
+    if meta:
+        try:
+            meta_path = data_dir / f"{pair_filename}-{timeframe}.meta.json"
+            payload = dict(meta)
+            payload.setdefault("symbol", pair)
+            payload.setdefault("timeframe", timeframe)
+            from datetime import datetime as _dt
+
+            payload.setdefault("downloaded_at", _dt.now().isoformat())
+            payload["rows"] = len(df)
+            with open(meta_path, "w", encoding="utf-8") as f:
+                _json.dump(payload, f, indent=2, default=str)
+        except Exception as e:
+            logger.warning(f"Could not write meta sidecar: {e}")
+
 
 def _download_stock_data_impl(pairs_list: list, timeframes_list: list,
                               start_date, end_date, data_format: str,
                               prepend: bool, erase: bool, config_obj,
                               datafeed_name: Optional[str], adjust: Optional[str],
                               dry_run: bool):
-    """Download A-share OHLCV via configured datafeed into user_data/data."""
+    """Download A-share OHLCV via configured datafeed into user_data/data.
+
+    Adjustment口径 defaults to qfq (forward-adjusted): unadjusted data
+    turns ex-div gaps into fake signals. Override per call with --adjust
+    or per config with stock.adjust.
+    """
     datafeed_name = (datafeed_name or "").lower() or str(
         config_obj.get("stock.datafeed", "akshare") if config_obj else "akshare"
     ).lower()
-    adjust = adjust or (config_obj.get("stock.adjust", None) if config_obj else None)
+    adjust = (adjust or (config_obj.get("stock.adjust", None) if config_obj else None)
+              or "qfq")
+    if adjust == "none":
+        adjust = None  # explicit opt-out of adjustment
     datadir = config_obj.get("datadir", "user_data/data") if config_obj else "user_data/data"
 
     try:
@@ -159,7 +191,40 @@ def _download_stock_data_impl(pairs_list: list, timeframes_list: list,
         console.print("\n[yellow]Dry run mode - no data will be downloaded[/yellow]")
         return
 
+    import json as _json
+    from pathlib import Path as _Path
+
     for pair in pairs_list:
+        # Dividend calendar once per pair (cash credited on ex-dates by
+        # backtests; best-effort — feeds without a calendar yield []).
+        if not dry_run:
+            try:
+                dividends = datafeed.get_dividends(
+                    symbol=pair, start=start_date, end=end_date
+                ) or []
+            except Exception as e:
+                logger.warning(f"Dividend fetch failed for {pair}: {e}")
+                dividends = []
+            try:
+                div_path = _Path(datadir) / f"{pair.replace('/', '_')}.dividends.json"
+                div_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(div_path, "w", encoding="utf-8") as f:
+                    _json.dump({
+                        "symbol": pair,
+                        "dividends": [
+                            {"ex_date": d["ex_date"].isoformat()
+                             if hasattr(d.get("ex_date"), "isoformat")
+                             else str(d.get("ex_date")),
+                             "cash_div": float(d.get("cash_div", 0))}
+                            for d in dividends
+                        ],
+                        "source": datafeed_name,
+                    }, f, indent=2, default=str)
+                if dividends:
+                    console.print(f"[blue]  ♥ {pair}: {len(dividends)} dividends[/blue]")
+            except Exception as e:
+                logger.warning(f"Could not write dividends file for {pair}: {e}")
+
         for timeframe in timeframes_list:
             if supported and timeframe not in supported:
                 console.print(f"[yellow]  {pair} {timeframe}: not supported by "
@@ -181,7 +246,8 @@ def _download_stock_data_impl(pairs_list: list, timeframes_list: list,
                 console.print(f"[yellow]  {pair} {timeframe}: empty after parsing[/yellow]")
                 continue
             _save_ohlcv_df(df, datadir, pair, timeframe, data_format,
-                           prepend, erase)
+                           prepend, erase,
+                           meta={"adjust": adjust, "datafeed": datafeed_name})
             console.print(f"[green]  ✓ {pair} {timeframe}: {len(df)} candles "
                           f"({df['date'].min()} to {df['date'].max()})[/green]")
 
@@ -385,8 +451,8 @@ def _download_data_impl(exchange: Optional[str], pairs: Optional[str], timeframe
               help='Market to download (crypto via CCXT, stock via A-share datafeed)')
 @click.option('--datafeed', type=str, default=None,
               help='Stock datafeed: akshare (default, free), tushare, baostock')
-@click.option('--adjust', type=click.Choice(['qfq', 'hfq']), default=None,
-              help='Stock price adjustment (default: config stock.adjust or none)')
+@click.option('--adjust', type=click.Choice(['qfq', 'hfq', 'none']), default=None,
+              help='Stock price adjustment (default: config stock.adjust, else qfq)')
 @click.option('--pairs', '-p', type=str, help='Trading pairs (comma/space-separated)')
 @click.option('--timeframes', '-t', type=str, help='Timeframes (comma-separated)')
 @click.option('--days', '-d', type=int, default=30, help='Number of days to download')

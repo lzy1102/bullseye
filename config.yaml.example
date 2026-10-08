@@ -101,6 +101,11 @@ stock:
   datafeed: tushare
   tushare_token: ""
 
+  # Price adjustment口径 for downloaded data AND backtests.
+  # qfq (forward-adjusted) is the default everywhere; backtests refuse to
+  # run stock files whose .meta.json sidecar declares a different口径.
+  adjust: qfq
+
 # ==================== Futures Configuration (China) ====================
 future:
   # Gateway: ctp, minictp, femas, uft
@@ -220,6 +225,19 @@ backtest:
 
   # Enable position stacking (multiple trades per pair)
   position_stacking: false
+
+  # Dividend cash tax on ex-dates, e.g. 0.1 = 10% (simplified: holding
+  # 1 month - 1 year; <1 month is 20%, >1 year exempt in reality)
+  dividend_tax: 0.1
+
+  # A-share microstructure rules (default on; set false to opt out)
+  enforce_lot_size: true       # buy in 100-share multiples
+  enforce_price_limits: true   # limit-up buys / limit-down sells rejected
+
+  # Per-pair price-limit ratio overrides (ST/*ST are 5% but cannot be
+  # detected from the code alone):
+  # price_limit_overrides:
+  #   "000001.SZ": 0.05
 
 # ==================== Hyperopt Configuration ====================
 hyperopt:

@@ -684,6 +684,61 @@ class TuShareDatafeed(BaseDatafeed):
             logger.error(f"Error getting money flow for {symbol}: {e}")
             return None
 
+    def get_dividends(
+        self,
+        symbol: str,
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get cash-dividend calendar via pro.dividend (分红送股).
+
+        Returns [{"ex_date": datetime, "cash_div": float}] with pre-tax
+        cash per share. Rows without a valid ex_date or with non-positive
+        cash are dropped. Field access is defensive: unknown schema
+        versions yield [] instead of crashing.
+        """
+        code, exchange = self._parse_symbol(symbol)
+        ts_code = f"{code}.{exchange}"
+
+        if end is None:
+            end = datetime.now()
+        if start is None:
+            start = end - timedelta(days=365 * 10)
+
+        try:
+            df = self.pro.dividend(
+                ts_code=ts_code,
+                start_date=start.strftime("%Y%m%d"),
+                end_date=end.strftime("%Y%m%d"),
+                fields="ts_code,div_proc,ex_date,cash_div",
+            )
+        except Exception as e:
+            logger.warning(f"Dividend query failed for {symbol}: {e}")
+            return []
+
+        if df is None or getattr(df, "empty", False):
+            return []
+
+        out: List[Dict[str, Any]] = []
+        for _, row in df.iterrows():
+            try:
+                get = row.get if hasattr(row, "get") else lambda k, d=None: row[k]
+                ex_raw = get("ex_date")
+                cash_raw = get("cash_div", 0)
+                if ex_raw is None or (isinstance(ex_raw, float) and ex_raw != ex_raw):
+                    continue
+                ex_date = pd.to_datetime(ex_raw).to_pydatetime()
+                cash = float(cash_raw or 0)
+                if cash <= 0:
+                    continue
+                out.append({"ex_date": ex_date, "cash_div": cash})
+            except Exception as e:
+                logger.debug(f"Skipping unparsable dividend row: {e}")
+                continue
+        out.sort(key=lambda d: d["ex_date"])
+        return out
+
     def get_limit_price(self, trade_date: datetime = None) -> Any:
         """
         Get limit up/down stocks (涨跌停).

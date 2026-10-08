@@ -209,6 +209,103 @@ class BacktestEngine:
 
         return self._data_handler
 
+    def _find_data_file(self, filename: str) -> Optional[Path]:
+        """Locate a sidecar file ({pair}-{tf}.meta.json / {pair}.dividends.json).
+
+        Mirrors the OHLCV search order (exchange subdir first, then base).
+        """
+        base_dir = Path(self._config.get("datadir", "user_data/data"))
+        for search_dir in (base_dir / self._config.exchange_name, base_dir):
+            candidate = search_dir / filename
+            if candidate.exists():
+                return candidate
+        return None
+
+    @staticmethod
+    def _normalize_adjust(value: Any) -> Optional[str]:
+        """Normalize adjustment labels (None/'none'/'' mean unadjusted)."""
+        if value is None:
+            return None
+        text = str(value).strip().lower()
+        if text in ("", "none", "null", "unadjusted", "bfq"):
+            return None
+        return text
+
+    def _validate_stock_adjust(self, pair: str, timeframe: str) -> None:
+        """Verify a stock file's adjustment口径 matches the declared one.
+
+        Declared口径 is `stock.adjust` (default qfq, matching the downloader).
+        Explicit mismatches raise; legacy files without a sidecar only warn.
+        Crypto pairs are never checked.
+        """
+        if self._detect_market_type(pair) != MarketType.STOCK:
+            return
+        declared = self._normalize_adjust(self._config.get("stock.adjust", "qfq"))
+        meta_path = self._find_data_file(f"{pair.replace('/', '_')}-{timeframe}.meta.json")
+        if meta_path is None:
+            logger.warning(
+                f"{pair} {timeframe}: no .meta.json sidecar (legacy download?) — "
+                f"assuming declared adjust={declared or 'none'}. Re-download "
+                "to record the口径."
+            )
+            return
+        try:
+            import json as _json
+
+            with open(meta_path, "r", encoding="utf-8") as f:
+                file_adjust = self._normalize_adjust((_json.load(f) or {}).get("adjust"))
+        except Exception as e:
+            logger.warning(f"Ignoring unreadable sidecar {meta_path}: {e}")
+            return
+        if file_adjust != declared:
+            raise BacktestError(
+                f"Adjustment mismatch for {pair} {timeframe}: file is "
+                f"{file_adjust or 'unadjusted'} but stock.adjust declares "
+                f"{declared or 'unadjusted'}. Re-download with matching "
+                "--adjust or align stock.adjust (mixing qfq with unadjusted "
+                "turns ex-div gaps into fake signals)."
+            )
+
+    @staticmethod
+    def _parse_dividend_entries(raw: Any) -> List[tuple]:
+        """Normalize dividend entries to [(date, cash_per_share)]."""
+        import pandas as pd
+
+        entries: List[tuple] = []
+        if not raw:
+            return entries
+        items = raw if isinstance(raw, list) else []
+        for item in items:
+            try:
+                if not isinstance(item, dict):
+                    continue
+                ex = pd.to_datetime(item.get("ex_date")).date()
+                cash = float(item.get("cash_div", 0) or 0)
+                if cash <= 0:
+                    continue
+                entries.append((ex, cash))
+            except Exception:
+                continue
+        entries.sort(key=lambda e: e[0])
+        return entries
+
+    def _load_dividends(self, pair: str) -> List[tuple]:
+        """Load a pair's dividend calendar from its sidecar JSON file."""
+        if self._detect_market_type(pair) != MarketType.STOCK:
+            return []
+        div_path = self._find_data_file(f"{pair.replace('/', '_')}.dividends.json")
+        if div_path is None:
+            return []
+        try:
+            import json as _json
+
+            with open(div_path, "r", encoding="utf-8") as f:
+                payload = _json.load(f) or {}
+            return self._parse_dividend_entries(payload.get("dividends"))
+        except Exception as e:
+            logger.warning(f"Ignoring unreadable dividends file {div_path}: {e}")
+            return []
+
     def run(
         self,
         strategy_class: Optional[Type[IStrategy]] = None,
@@ -224,6 +321,7 @@ class BacktestEngine:
         export: Optional[str] = None,
         data: Optional[Dict[str, Any]] = None,
         slippage: Optional[float] = None,
+        dividends: Optional[Dict[str, Any]] = None,
     ) -> BacktestResult:
         """
         Run backtesting.
@@ -244,6 +342,9 @@ class BacktestEngine:
             export: Export filename for results
             data: In-memory OHLCV data {pair: DataFrame}; skips disk loading
             slippage: Adverse fill adjustment (e.g. 0.001 = 0.1% worse fills)
+            dividends: In-memory dividend calendars
+                {pair: [{"ex_date": date/str, "cash_div": float per share}]};
+                disk-loaded runs read `{pair}.dividends.json` instead
 
         Returns:
             BacktestResult with trades and metrics
@@ -324,6 +425,7 @@ class BacktestEngine:
             init_settlement_detector(settlement_cfg)
 
         # Load data (in-memory injection takes precedence over disk)
+        from_disk = data is None
         if data is None:
             data = self._load_data(pairlist, timeframe, timerange)
         if not data:
@@ -338,6 +440,28 @@ class BacktestEngine:
         if not data:
             logger.error("No data available for backtesting")
             return BacktestResult(strategy_name=strategy.__class__.__name__)
+
+        # Adjustment口径 check (disk loads only): refuse to mix qfq files
+        # with an unadjusted declaration and vice versa.
+        if from_disk:
+            for pair in list(data.keys()):
+                self._validate_stock_adjust(pair, timeframe)
+
+        # Dividend calendars: explicit argument wins, else per-pair sidecar
+        # files written by download-data (missing file = no dividends).
+        if dividends is not None:
+            dividend_map = {
+                pair: self._parse_dividend_entries(entries)
+                for pair, entries in dividends.items()
+            }
+        else:
+            dividend_map = {pair: self._load_dividends(pair) for pair in data}
+        try:
+            dividend_tax = float(self._config.get("backtest.dividend_tax", 0.1))
+        except (TypeError, ValueError):
+            logger.warning("Ignoring invalid backtest.dividend_tax")
+            dividend_tax = 0.1
+        self._dividends_paid = 0.0
 
         # Initialize components
         wallets = Wallets(self._config, initial_balance=initial_balance)
@@ -370,6 +494,8 @@ class BacktestEngine:
             max_open_trades=max_open_trades,
             stake_amount=stake_amount,
             initial_balance=initial_balance,
+            dividends=dividend_map,
+            dividend_tax=dividend_tax,
         )
 
         # Build result
@@ -390,10 +516,26 @@ class BacktestEngine:
                 "initial_balance": initial_balance,
                 "fee_rate": self._fee_rate,
                 "callback_failures": self._callback_failures,
+                "dividends_paid": getattr(self, "_dividends_paid", 0.0),
+                "dividend_tax": dividend_tax,
             },
             equity_curve=getattr(self, "_last_equity_curve", []),
         )
         result.calculate_metrics(initial_balance=initial_balance)
+
+        # Fold ex-date dividend cash (credited to the wallet during the
+        # loop) into the headline profit figures so metrics, final balance
+        # and the equity curve agree. Trade-level profits stay pure price
+        # PnL; the aggregate carries the cash component.
+        dividends_paid = float(getattr(self, "_dividends_paid", 0.0) or 0.0)
+        if dividends_paid:
+            m = result.metrics
+            m.total_profit += dividends_paid
+            if initial_balance > 0:
+                m.total_profit_pct = m.total_profit / initial_balance * 100
+            if m.total_trades:
+                m.avg_profit += dividends_paid / m.total_trades
+            m.final_balance += dividends_paid
 
         # Export if requested
         if export:
@@ -578,12 +720,18 @@ class BacktestEngine:
         max_open_trades: int,
         stake_amount: float,
         initial_balance: float,
+        dividends: Optional[Dict[str, List[tuple]]] = None,
+        dividend_tax: float = 0.1,
     ) -> List[BacktestTrade]:
         """
         Main backtesting loop.
 
         Iterates through all candles chronologically, executing trades based
         on precomputed strategy signals (computed once per pair, freqtrade-style).
+
+        `dividends` maps pair -> [(ex_date, cash_per_share)]; holders of
+        record on ex-date are credited cash (net of `dividend_tax`) into
+        the wallet before exits are evaluated.
         """
         # Build unified timeline
         all_dates = set()
@@ -644,6 +792,21 @@ class BacktestEngine:
         # Last processed candle index per pair, for mark-to-market of
         # pairs that have no candle at the current timestamp
         pair_last_index: Dict[str, int] = {}
+        # Dividend calendars indexed by calendar date for O(1) lookup.
+        div_by_date: Dict[str, Dict[Any, float]] = {}
+        for _pair, _entries in (dividends or {}).items():
+            _day_map: Dict[Any, float] = {}
+            for _ex, _cash in (_entries or []):
+                try:
+                    _day = _ex.date() if hasattr(_ex, "date") else _ex
+                    _day_map[_day] = _day_map.get(_day, 0.0) + float(_cash)
+                except Exception:
+                    continue
+            if _day_map:
+                div_by_date[_pair] = _day_map
+        dividends_paid = 0.0
+        # One credit per (pair, ex-date): intraday candles share the date.
+        credited_divs: set = set()
 
         # Balance tracking for equity curve
         startup_candle_count = getattr(strategy, 'startup_candle_count', 30)
@@ -717,6 +880,36 @@ class BacktestEngine:
                         max_open_trades=max_open_trades,
                     )
 
+            # Cash dividends on ex-dates: holders of record (open long
+            # stock positions) are credited before exits are evaluated, so
+            # the cash is included in the equity sample below.
+            if div_by_date:
+                try:
+                    today = current_date.date() \
+                        if hasattr(current_date, "date") else current_date
+                except Exception:
+                    today = None
+                if today is not None:
+                    for trade in open_trades.values():
+                        if trade.is_short:
+                            continue
+                        day_map = div_by_date.get(trade.pair)
+                        if not day_map or today not in day_map:
+                            continue
+                        if (trade.pair, today) in credited_divs:
+                            continue
+                        payout = day_map[today] * (1 - dividend_tax) * trade.amount
+                        if payout > 0:
+                            wallets.add_amount(
+                                self._config.stake_currency, payout
+                            )
+                            dividends_paid += payout
+                            credited_divs.add((trade.pair, today))
+                            logger.debug(
+                                f"Dividend for {trade.pair} on {today}: "
+                                f"+{payout:.2f}"
+                            )
+
             # Sample mark-to-market equity once per timestamp (net of fees,
             # leverage-aware — previously gross-only and unleveraged, so the
             # curve drifted above final_balance and understated leverage).
@@ -761,6 +954,12 @@ class BacktestEngine:
 
         logger.info(f"Backtest complete: {len(closed_bt_trades)} trades")
         self._last_equity_curve = equity_curve
+        try:
+            self._dividends_paid = float(
+                getattr(self, "_dividends_paid", 0.0) + dividends_paid
+            )
+        except Exception:
+            self._dividends_paid = dividends_paid
         return closed_bt_trades
 
     def _safe_callback(self, label: str, fn, default):
