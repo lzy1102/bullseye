@@ -270,7 +270,8 @@ def _download_data_impl(exchange: Optional[str], pairs: Optional[str], timeframe
     Crypto path uses CCXT; stock path uses the configured A-share datafeed
     (akshare/tushare/baostock) and writes backtest-ready OHLCV files.
     """
-    # Load configuration first (both paths need it)
+    # Load configuration first (both paths need it; missing file is fine)
+    config_obj = None
     try:
         from ..configuration import Config
         config_obj = Config(config or "config.yaml")
