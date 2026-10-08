@@ -31,16 +31,35 @@ def list_hyperopt_results(best_only: bool = False, profitable_only: bool = False
             with open(filepath, 'r') as f:
                 result = json.load(f)
 
+                # Engine schema nests metrics under best_metrics; legacy
+                # files (and _export_results compat fields) keep top-level
+                # total_profit. Normalize for filtering/sorting.
+                flat = dict(result)
+                best_metrics = result.get("best_metrics") or {}
+                if "total_profit" not in flat and "total_profit" in best_metrics:
+                    flat["total_profit"] = best_metrics.get("total_profit", 0)
+                if "total_profit_percent" not in flat and "total_profit_pct" in best_metrics:
+                    flat["total_profit_percent"] = best_metrics.get(
+                        "total_profit_pct", 0
+                    )
+
                 # Filter based on criteria
                 if best_only and not result.get('is_best', False):
-                    continue
-                if profitable_only and result.get('total_profit', 0) <= 0:
+                    # Engine files mark the top entry inside results[];
+                    # a file with any best is considered when best_only.
+                    nested_best = any(
+                        r.get("is_best") for r in result.get("results", [])
+                    )
+                    if not nested_best and not result.get("best_params"):
+                        continue
+                if profitable_only and flat.get('total_profit', 0) <= 0:
                     continue
 
                 results.append({
                     'filename': filepath.name,
                     'filepath': filepath,
-                    'result': result
+                    'result': flat,
+                    'raw': result,
                 })
         except (OSError, ValueError):
             pass

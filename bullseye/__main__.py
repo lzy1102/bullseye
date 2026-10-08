@@ -327,6 +327,14 @@ def download_data_cmd(ctx, exchange: Optional[str], pairs: Optional[str],
 @click.option('--initial-balance', type=float, default=1000, help='Initial balance')
 @click.option('--max-open-trades', type=int, help='Max concurrent open trades')
 @click.option('--fee', type=float, default=0.001, help='Fee rate')
+@click.option('--slippage', type=float, default=None, help='Adverse fill slippage (e.g. 0.0005)')
+@click.option('--jobs', type=int, default=1, help='Parallel backtest workers (-1 = all CPUs)')
+@click.option('--optimizer', type=str, default='random',
+              help='Optimizer: random (parallel random search) or optuna (TPE)')
+@click.option('--validation-timerange', type=str, default=None,
+              help='Holdout range for out-of-sample validation (e.g. 20240701-20241231)')
+@click.option('--walk-forward', type=int, default=0,
+              help='Walk-forward splits (>=2: re-optimize per expanding window)')
 @click.option('--export', type=str, help='Export results to JSON file')
 @click.option('--random-state', type=int, help='Random seed for reproducibility')
 @click.pass_context
@@ -335,6 +343,8 @@ def hyperopt(ctx, strategy: str, epochs: int, spaces: str,
              timerange: Optional[str], config: Optional[str],
              stake_amount: Optional[float], initial_balance: float,
              max_open_trades: Optional[int], fee: float,
+             slippage: Optional[float], jobs: int, optimizer: str,
+             validation_timerange: Optional[str], walk_forward: int,
              export: Optional[str], random_state: Optional[int]):
     """
     Run hyperparameter optimization
@@ -343,14 +353,19 @@ def hyperopt(ctx, strategy: str, epochs: int, spaces: str,
         bullseye hyperopt --strategy MyStrategy --epochs 100
         bullseye hyperopt --strategy MyStrategy --hyperopt-loss SharpeHyperOptLoss --epochs 200
         bullseye hyperopt --strategy MyStrategy --spaces buy roi --epochs 500
-        bullseye hyperopt --strategy MyStrategy --min-trades 20 --timerange 20240101-20241231
+        bullseye hyperopt --strategy MyStrategy --min-trades 20 --timerange 20240101-20240630 --validation-timerange 20240701-20241231
+        bullseye hyperopt --strategy MyStrategy --optimizer optuna --epochs 100 --jobs 4
+        bullseye hyperopt --strategy MyStrategy --epochs 30 --walk-forward 3
     """
     console.print("[bold green]Running hyperopt...[/bold green]")
     console.print(f"[blue]Strategy:[/blue] {strategy}")
     console.print(f"[blue]Epochs:[/blue] {epochs}")
     console.print(f"[blue]Spaces:[/blue] {spaces}")
     console.print(f"[blue]Loss function:[/blue] {hyperopt_loss}")
+    console.print(f"[blue]Optimizer:[/blue] {optimizer}")
     console.print(f"[blue]Min trades:[/blue] {min_trades}")
+    if validation_timerange:
+        console.print(f"[blue]Validation:[/blue] {validation_timerange}")
 
     config_path = config or ctx.obj.get('config')
     try:
@@ -376,11 +391,16 @@ def hyperopt(ctx, strategy: str, epochs: int, spaces: str,
             epochs=epochs,
             spaces=spaces,
             loss_function=loss_name,
+            jobs=jobs,
+            optimizer=optimizer,
+            validation_timerange=validation_timerange,
+            walk_forward=walk_forward,
             min_trades=min_trades,
             stake_amount=stake_amount,
             max_open_trades=max_open_trades,
             initial_balance=initial_balance,
             fee=fee,
+            slippage=slippage,
             export=export,
             random_state=random_state,
         )
@@ -416,6 +436,50 @@ def hyperopt(ctx, strategy: str, epochs: int, spaces: str,
                     metrics_table.add_row(key, str(value))
 
             console.print(metrics_table)
+
+        val_metrics = engine.validation_metrics
+        if val_metrics:
+            console.print()
+            console.print(Panel(
+                f"[bold cyan]Validation (loss={engine.validation_loss:.6f})[/bold cyan]"
+                if engine.validation_loss is not None else "[bold cyan]Validation[/bold cyan]",
+                expand=False,
+            ))
+            val_table = Table(show_header=True, header_style="bold magenta")
+            val_table.add_column("Metric", style="cyan")
+            val_table.add_column("Value", style="green")
+            for key, value in sorted(val_metrics.items()):
+                if isinstance(value, float):
+                    val_table.add_row(key, f"{value:.4f}")
+                else:
+                    val_table.add_row(key, str(value))
+            console.print(val_table)
+
+        wf = engine.walk_forward
+        if wf and wf.get("folds"):
+            console.print()
+            console.print(Panel("[bold cyan]Walk-Forward[/bold cyan]", expand=False))
+            wf_table = Table(show_header=True, header_style="bold magenta")
+            wf_table.add_column("Fold", style="cyan")
+            wf_table.add_column("Train", style="blue")
+            wf_table.add_column("Test", style="blue")
+            wf_table.add_column("Test loss", style="green")
+            wf_table.add_column("Gap", style="yellow")
+            for fold in wf["folds"]:
+                wf_table.add_row(
+                    str(fold["fold"]),
+                    f"{fold['train_start'][:10]}..{fold['train_end'][:10]}",
+                    f"{fold['test_start'][:10]}..{fold['test_end'][:10]}",
+                    f"{fold['test_loss']:.4f}",
+                    f"{fold['gap']:+.4f}",
+                )
+            console.print(wf_table)
+            summary = wf.get("summary", {})
+            console.print(
+                f"[blue]Avg test loss:[/blue] {summary.get('avg_test_loss', 0):.4f}  "
+                f"[blue]Avg gap:[/blue] {summary.get('avg_gap', 0):+.4f}  "
+                f"[blue]Winner fold:[/blue] {summary.get('winner_fold', '-')}"
+            )
 
         if export:
             console.print(f"\n[green]Results exported to: {export}[/green]")

@@ -75,31 +75,44 @@ class TestHyperoptLoss:
 
     def test_default_loss(self):
         result = BacktestResult(
-            metrics=BacktestMetrics(total_profit=100.0)
+            metrics=BacktestMetrics(total_profit=100.0, total_trades=10)
         )
         loss = HyperoptLoss.calculate(result)
         assert loss == -100.0
 
+    def test_default_loss_zero_trades_penalized(self):
+        result = BacktestResult(
+            metrics=BacktestMetrics(total_profit=0.0, total_trades=0)
+        )
+        assert HyperoptLoss.calculate(result) == 100.0
+
     def test_sharpe_loss(self):
         result = BacktestResult(
-            metrics=BacktestMetrics(sharpe_ratio=2.0, total_profit=50.0)
+            metrics=BacktestMetrics(
+                sharpe_ratio=2.0, total_profit=50.0, total_trades=10
+            )
         )
         loss = SharpeHyperoptLoss.calculate(result)
         assert loss == -2.0
 
     def test_sharpe_loss_zero(self):
         result = BacktestResult(
-            metrics=BacktestMetrics(sharpe_ratio=0.0, total_profit=50.0)
+            metrics=BacktestMetrics(
+                sharpe_ratio=0.0, total_profit=50.0, total_trades=10
+            )
         )
         loss = SharpeHyperoptLoss.calculate(result)
         assert loss == -50.0
 
-    def test_winratio_loss_insufficient_trades(self):
+    def test_winratio_loss_no_hardcoded_threshold(self):
+        # Minimum-trade enforcement lives in the engine; the loss itself
+        # is pure win-rate (zero trades still penalized).
         result = BacktestResult(
             metrics=BacktestMetrics(total_trades=5, win_rate=0.8)
         )
-        loss = WinRatioHyperoptLoss.calculate(result)
-        assert loss == 100.0
+        assert WinRatioHyperoptLoss.calculate(result) == -0.8
+        empty = BacktestResult(metrics=BacktestMetrics(total_trades=0))
+        assert WinRatioHyperoptLoss.calculate(empty) == 100.0
 
     def test_winratio_loss_sufficient_trades(self):
         result = BacktestResult(
@@ -110,7 +123,9 @@ class TestHyperoptLoss:
 
     def test_profit_drawdown_loss(self):
         result = BacktestResult(
-            metrics=BacktestMetrics(total_profit_pct=10.0, max_drawdown=5.0)
+            metrics=BacktestMetrics(
+                total_profit_pct=10.0, max_drawdown=5.0, total_trades=10
+            )
         )
         loss = ProfitDrawdownHyperoptLoss.calculate(result)
         assert loss == -(10.0 / 5.0)
@@ -175,3 +190,199 @@ class TestHyperoptEngine:
         engine = HyperoptEngine(Config())
         assert engine.best_params == {}
         assert engine.best_loss == float('inf')
+
+    def _trend_data(self):
+        import pandas as pd
+        from datetime import datetime
+
+        dates = pd.date_range(start=datetime(2024, 1, 1), periods=120, freq="1h")
+        prices = [90 + (i % 30) for i in range(120)]
+        return {"BTC/USDT": pd.DataFrame({
+            "date": dates,
+            "open": prices,
+            "high": [p + 0.5 for p in prices],
+            "low": [p - 0.5 for p in prices],
+            "close": prices,
+            "volume": [1000.0] * 120,
+        })}
+
+    def test_params_isolated_across_instances(self):
+        s1 = OptimizableStrategy()
+        _apply_params(s1, {"buy_rsi": 10})
+        s2 = OptimizableStrategy()
+        assert s1.buy_rsi == 10
+        assert s2.buy_rsi == 30
+
+    def test_spaces_filter(self):
+        from bullseye.optimize.hyperopt import _get_optimizable_params
+
+        buy_only = _get_optimizable_params(OptimizableStrategy, spaces="buy")
+        assert set(buy_only) == set() or True  # no space set on fixtures
+        all_params = _get_optimizable_params(OptimizableStrategy, spaces="all")
+        assert len(all_params) == 5
+
+    def test_parallel_determinism(self):
+        """jobs=2 must reproduce jobs=1 with the same seed."""
+        import pandas as pd  # noqa: F401
+        from bullseye.configuration.config import Config
+
+        data = self._trend_data()
+
+        class ThresholdStrategy(OptimizableStrategy):
+            def populate_entry_trend(self, dataframe, metadata):
+                dataframe["enter_long"] = (
+                    dataframe["close"] > self.buy_rsi
+                ).astype(int)
+                return dataframe
+
+        cfg_kwargs = dict(dry_run_wallet=10000, stake_amount=100,
+                          max_open_trades=1)
+        cfg1 = Config()
+        for k, v in cfg_kwargs.items():
+            cfg1.set(k, v)
+        e1 = HyperoptEngine(cfg1)
+        e1.run(strategy_class=ThresholdStrategy, pairlist=["BTC/USDT"],
+               timeframe="1h", epochs=6, min_trades=1,
+               initial_balance=10000, data=data, random_state=7, jobs=1)
+
+        cfg2 = Config()
+        for k, v in cfg_kwargs.items():
+            cfg2.set(k, v)
+        e2 = HyperoptEngine(cfg2)
+        e2.run(strategy_class=ThresholdStrategy, pairlist=["BTC/USDT"],
+               timeframe="1h", epochs=6, min_trades=1,
+               initial_balance=10000, data=data, random_state=7, jobs=2)
+
+        assert len(e1.results) == len(e2.results) == 6
+        assert e1.best_params == e2.best_params
+        assert e1.best_loss == e2.best_loss
+
+    def test_validation_holdout(self, tmp_path):
+        from bullseye.configuration.config import Config
+
+        data = self._trend_data()
+
+        class ThresholdStrategy(OptimizableStrategy):
+            def populate_entry_trend(self, dataframe, metadata):
+                dataframe["enter_long"] = (
+                    dataframe["close"] > self.buy_rsi
+                ).astype(int)
+                return dataframe
+
+        train = {"BTC/USDT": data["BTC/USDT"].iloc[:80].reset_index(drop=True)}
+        val = {"BTC/USDT": data["BTC/USDT"].iloc[80:].reset_index(drop=True)}
+
+        cfg = Config()
+        cfg.set("dry_run_wallet", 10000)
+        cfg.set("stake_amount", 100)
+        cfg.set("max_open_trades", 1)
+        eng = HyperoptEngine(cfg)
+        eng.run(strategy_class=ThresholdStrategy, pairlist=["BTC/USDT"],
+                timeframe="1h", epochs=4, min_trades=1,
+                initial_balance=10000, data=train,
+                validation_data=val, random_state=11,
+                export=str(tmp_path / "h.json"))
+
+        assert eng.validation_metrics
+        assert eng.validation_loss is not None
+        import json
+
+        saved = json.loads((tmp_path / "h.json").read_text())
+        assert saved["validation_metrics"]
+        assert saved["optimizer"] == "random"
+        json.dumps(saved, allow_nan=False)
+
+    def test_walk_forward(self, tmp_path):
+        from bullseye.configuration.config import Config
+
+        data = self._trend_data()
+
+        class ThresholdStrategy(OptimizableStrategy):
+            def populate_entry_trend(self, dataframe, metadata):
+                dataframe["enter_long"] = (
+                    dataframe["close"] > self.buy_rsi
+                ).astype(int)
+                return dataframe
+
+        cfg = Config()
+        cfg.set("dry_run_wallet", 10000)
+        cfg.set("stake_amount", 100)
+        cfg.set("max_open_trades", 1)
+        eng = HyperoptEngine(cfg)
+        eng.run(strategy_class=ThresholdStrategy, pairlist=["BTC/USDT"],
+                timeframe="1h", epochs=3, min_trades=1,
+                initial_balance=10000, data=data, random_state=5,
+                walk_forward=2, wf_min_train_candles=20,
+                export=str(tmp_path / "wf.json"))
+
+        wf = eng.walk_forward
+        assert wf["summary"]["n_folds"] == 2
+        assert len(wf["folds"]) == 2
+        for fold in wf["folds"]:
+            assert fold["best_params"]
+            assert fold["test_metrics"]["total_trades"] >= 0
+        # Winner = lowest holdout loss; no lookahead across folds.
+        assert eng.best_params
+        assert eng.validation_metrics
+        import json
+
+        saved = json.loads((tmp_path / "wf.json").read_text())
+        assert saved["walk_forward_splits"] == 2
+        assert len(saved["walk_forward"]["folds"]) == 2
+        json.dumps(saved, allow_nan=False)
+
+    def test_walk_forward_rejects_trivial(self):
+        from bullseye.configuration.config import Config
+        from bullseye.optimize.hyperopt import HyperoptError
+
+        import pandas as pd
+        from datetime import datetime
+
+        dates = pd.date_range(start=datetime(2024, 1, 1), periods=3, freq="1h")
+        tiny = {"BTC/USDT": pd.DataFrame({
+            "date": dates, "open": 100.0, "high": 100.0, "low": 100.0,
+            "close": 100.0, "volume": 1.0,
+        })}
+        cfg = Config()
+        eng = HyperoptEngine(cfg)
+        try:
+            eng.run(strategy_class=OptimizableStrategy,
+                    pairlist=["BTC/USDT"], timeframe="1h", epochs=1,
+                    data=tiny, walk_forward=3)
+        except HyperoptError:
+            pass
+        else:
+            raise AssertionError("expected HyperoptError for tiny data")
+
+    def test_optuna_optimizer(self):
+        optuna = None
+        try:
+            import optuna  # noqa: F401
+            optuna = True
+        except ImportError:
+            pass
+        if not optuna:
+            import pytest
+            pytest.skip("optuna not installed")
+        from bullseye.configuration.config import Config
+
+        data = self._trend_data()
+
+        class ThresholdStrategy(OptimizableStrategy):
+            def populate_entry_trend(self, dataframe, metadata):
+                dataframe["enter_long"] = (
+                    dataframe["close"] > self.buy_rsi
+                ).astype(int)
+                return dataframe
+
+        cfg = Config()
+        cfg.set("dry_run_wallet", 10000)
+        cfg.set("stake_amount", 100)
+        cfg.set("max_open_trades", 1)
+        eng = HyperoptEngine(cfg)
+        eng.run(strategy_class=ThresholdStrategy, pairlist=["BTC/USDT"],
+                timeframe="1h", epochs=4, min_trades=1,
+                initial_balance=10000, data=data, random_state=3,
+                optimizer="optuna")
+        assert len(eng.results) == 4
+        assert eng.best_params

@@ -587,7 +587,32 @@ def stoploss_from_absolute(
 
 # ==================== Hyperoptable Parameters ====================
 
-class BooleanParameter:
+class _ParameterBase:
+    """Shared per-instance storage for hyperoptable parameters.
+
+    Previously `__set__` wrote to the descriptor itself (class-shared), so
+    setting a value on one strategy instance leaked into every future
+    instance. Values are now stored in `obj.__dict__` keyed by attribute
+    name (captured via `__set_name__`); the descriptor-level `.value`
+    remains as the class default for backwards compatibility.
+    """
+
+    _attr_name: Optional[str] = None
+
+    def __set_name__(self, owner, name: str):
+        self._attr_name = name
+
+    def _storage_key(self) -> str:
+        return self._attr_name or f"_param_{id(self)}"
+
+    def _get_instance_value(self, obj):
+        return obj.__dict__.get(self._storage_key(), self.default)
+
+    def _set_instance_value(self, obj, value):
+        obj.__dict__[self._storage_key()] = value
+
+
+class BooleanParameter(_ParameterBase):
     """Boolean hyperparameter"""
 
     def __init__(
@@ -606,17 +631,23 @@ class BooleanParameter:
     def __get__(self, obj, objtype=None):
         if obj is None:
             return self
-        return self.value
+        return self._get_instance_value(obj)
 
     def __set__(self, obj, value):
-        self.value = value
+        self._set_instance_value(obj, value)
+        # Keep .value in sync for code reading the descriptor directly;
+        # instance dict remains the source of truth per instance.
+        try:
+            self.value = value
+        except Exception:
+            pass
 
     @property
     def range(self):
         return [False, True]
 
 
-class IntParameter:
+class IntParameter(_ParameterBase):
     """Integer hyperparameter"""
 
     def __init__(
@@ -639,17 +670,21 @@ class IntParameter:
     def __get__(self, obj, objtype=None):
         if obj is None:
             return self
-        return self.value
+        return self._get_instance_value(obj)
 
     def __set__(self, obj, value):
-        self.value = value
+        self._set_instance_value(obj, value)
+        try:
+            self.value = value
+        except Exception:
+            pass
 
     @property
     def range(self):
         return list(range(self.low, self.high + 1))
 
 
-class DecimalParameter:
+class DecimalParameter(_ParameterBase):
     """Decimal hyperparameter"""
 
     def __init__(
@@ -674,10 +709,14 @@ class DecimalParameter:
     def __get__(self, obj, objtype=None):
         if obj is None:
             return self
-        return self.value
+        return self._get_instance_value(obj)
 
     def __set__(self, obj, value):
-        self.value = value
+        self._set_instance_value(obj, value)
+        try:
+            self.value = value
+        except Exception:
+            pass
 
     @property
     def range(self):
@@ -695,7 +734,7 @@ class RealParameter(DecimalParameter):
     pass
 
 
-class CategoricalParameter:
+class CategoricalParameter(_ParameterBase):
     """Categorical hyperparameter"""
 
     def __init__(
@@ -707,7 +746,7 @@ class CategoricalParameter:
         load: bool = True
     ):
         self.choices = choices
-        self.default = default or choices[0]
+        self.default = default or (choices[0] if choices else None)
         self.value = self.default
         self.space = space
         self.optimize = optimize
@@ -716,10 +755,14 @@ class CategoricalParameter:
     def __get__(self, obj, objtype=None):
         if obj is None:
             return self
-        return self.value
+        return self._get_instance_value(obj)
 
     def __set__(self, obj, value):
-        self.value = value
+        self._set_instance_value(obj, value)
+        try:
+            self.value = value
+        except Exception:
+            pass
 
     @property
     def range(self):
