@@ -79,32 +79,60 @@ class BacktestMetrics:
     initial_balance: float = 0.0
     final_balance: float = 0.0
 
+    @staticmethod
+    def _json_safe(value: Any) -> Any:
+        """Map inf/-inf/NaN to None for strict-JSON compliance.
+
+        `json.dumps` emits `Infinity`/`NaN` by default, which strict parsers
+        (and most non-Python consumers) reject. Internal metrics keep `inf`
+        semantics; only the exported dict is sanitized.
+        """
+        try:
+            import math
+
+            if isinstance(value, float) and (
+                math.isinf(value) or math.isnan(value)
+            ):
+                return None
+        except Exception:
+            pass
+        return value
+
     def to_dict(self) -> Dict[str, Any]:
+        def _r(v: Any, nd: int) -> Any:
+            v = self._json_safe(v)
+            if v is None or not isinstance(v, (int, float)):
+                return v
+            try:
+                return round(v, nd)
+            except Exception:
+                return v
+
         return {
             "total_trades": self.total_trades,
             "winning_trades": self.winning_trades,
             "losing_trades": self.losing_trades,
-            "win_rate": round(self.win_rate, 4),
-            "total_profit": round(self.total_profit, 4),
-            "total_profit_pct": round(self.total_profit_pct, 2),
-            "avg_profit": round(self.avg_profit, 4),
-            "avg_profit_pct": round(self.avg_profit_pct, 2),
-            "max_profit": round(self.max_profit, 4),
-            "max_loss": round(self.max_loss, 4),
-            "profit_factor": round(self.profit_factor, 2),
-            "sharpe_ratio": round(self.sharpe_ratio, 2),
-            "sortino_ratio": round(self.sortino_ratio, 2),
-            "calmar_ratio": round(self.calmar_ratio, 2),
-            "max_drawdown": round(self.max_drawdown, 2),
-            "max_drawdown_abs": round(self.max_drawdown_abs, 4),
-            "avg_trade_duration_hours": round(self.avg_trade_duration, 2),
+            "win_rate": _r(self.win_rate, 4),
+            "total_profit": _r(self.total_profit, 4),
+            "total_profit_pct": _r(self.total_profit_pct, 2),
+            "avg_profit": _r(self.avg_profit, 4),
+            "avg_profit_pct": _r(self.avg_profit_pct, 2),
+            "max_profit": _r(self.max_profit, 4),
+            "max_loss": _r(self.max_loss, 4),
+            "profit_factor": _r(self.profit_factor, 2),
+            "sharpe_ratio": _r(self.sharpe_ratio, 2),
+            "sortino_ratio": _r(self.sortino_ratio, 2),
+            "calmar_ratio": _r(self.calmar_ratio, 2),
+            "max_drawdown": _r(self.max_drawdown, 2),
+            "max_drawdown_abs": _r(self.max_drawdown_abs, 4),
+            "avg_trade_duration_hours": _r(self.avg_trade_duration, 2),
             "best_pair": self.best_pair,
             "worst_pair": self.worst_pair,
             "start_date": self.start_date.isoformat() if self.start_date else None,
             "end_date": self.end_date.isoformat() if self.end_date else None,
             "backtest_days": self.backtest_days,
             "initial_balance": self.initial_balance,
-            "final_balance": round(self.final_balance, 4),
+            "final_balance": _r(self.final_balance, 4),
         }
 
 

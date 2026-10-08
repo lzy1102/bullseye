@@ -311,23 +311,34 @@ class Config:
 
     @property
     def settlement(self) -> Dict[str, Any]:
-        """Settlement configuration for T+0/T+1 rules."""
-        return self._config.get("settlement", {})
+        """Settlement configuration for T+0/T+1 rules.
+
+        Normalizes the one-switch string form (`settlement: t1`) to the
+        dict form so callers never crash on `str.get`. Mirrors
+        `init_settlement_detector` semantics (global manual default).
+        """
+        raw = self._config.get("settlement", {})
+        if isinstance(raw, str):
+            return {"mode": "manual", "overrides": {}, "default": raw.lower()}
+        return raw if isinstance(raw, dict) else {}
 
     @property
     def settlement_mode(self) -> str:
         """Settlement mode: 'auto' or 'manual'."""
-        return self.settlement.get("mode", "auto")
+        cfg = self.settlement
+        return cfg.get("mode", "auto") if isinstance(cfg, dict) else "auto"
 
     @property
     def settlement_overrides(self) -> Dict[str, str]:
         """Per-pair settlement type overrides."""
-        return self.settlement.get("overrides", {})
+        cfg = self.settlement
+        return cfg.get("overrides", {}) if isinstance(cfg, dict) else {}
 
     @property
     def settlement_default(self) -> str:
         """Default settlement type for unknown pairs."""
-        return self.settlement.get("default", "t0")
+        cfg = self.settlement
+        return cfg.get("default", "t0") if isinstance(cfg, dict) else "t0"
 
     def __repr__(self) -> str:
         return f"Config(dry_run={self.dry_run}, exchange={self.exchange_name})"

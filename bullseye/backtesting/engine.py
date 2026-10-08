@@ -158,6 +158,8 @@ class BacktestEngine:
         # Adverse fill price adjustment (e.g. 0.001 = 0.1% worse on both sides)
         self._slippage_rate = 0.0
         self._data_handler = self._create_data_handler()
+        # Count of strategy-callback failures swallowed per run (visibility)
+        self._callback_failures = 0
 
     def _calc_fee(self, value: float, is_sell: bool) -> float:
         """Transaction fee: structured model when configured, else flat rate."""
@@ -211,6 +213,7 @@ class BacktestEngine:
         self,
         strategy_class: Optional[Type[IStrategy]] = None,
         strategy_name: Optional[str] = None,
+        strategy_instance: Optional[IStrategy] = None,
         pairlist: Optional[List[str]] = None,
         timeframe: Optional[str] = None,
         timerange: Optional[str] = None,
@@ -228,6 +231,9 @@ class BacktestEngine:
         Args:
             strategy_class: Strategy class to use
             strategy_name: Strategy name to load (if class not provided)
+            strategy_instance: Pre-built strategy instance (e.g. hyperopt
+                sampled params). Takes precedence; the instance is used
+                as-is so caller-side parameter overrides are honored.
             pairlist: List of trading pairs
             timeframe: Candle timeframe
             timerange: Time range string (e.g., "20240101-20241231")
@@ -242,8 +248,11 @@ class BacktestEngine:
         Returns:
             BacktestResult with trades and metrics
         """
-        # Load strategy
-        if strategy_class:
+        # Load strategy (pre-built instance wins so hyperopt-sampled params
+        # are not silently discarded by re-instantiation).
+        if strategy_instance is not None:
+            strategy = strategy_instance
+        elif strategy_class:
             strategy = strategy_class()
         elif strategy_name:
             strategy = self._load_strategy(strategy_name)
@@ -257,13 +266,44 @@ class BacktestEngine:
         # Apply config overrides
         pairlist = pairlist or self._get_pairlist()
         timeframe = timeframe or getattr(strategy, 'timeframe', None) or self._config.timeframe
-        stake_amount = stake_amount or self._config.stake_amount
+        # "unlimited" stake is dynamic — keep None as marker instead of 0
+        # so _check_entry can size from available balance per open slot.
+        unlimited_stake = self._config.stake_amount_unlimited and stake_amount is None
+        if stake_amount is None and not unlimited_stake:
+            stake_amount = self._config.stake_amount
         max_open_trades = max_open_trades or self._config.max_open_trades
         initial_balance = initial_balance or self._config.dry_run_wallet
+        # Refresh structured model from current config (Config may have changed
+        # after engine construction).
+        self._fee_model = FeeModel.from_config(self._config)
         if fee is not None:
             # Explicit flat fee overrides any structured config
             self._fee_rate = fee
             self._fee_model = None
+        else:
+            # Honor flat fee from config when no structured model is set.
+            # Previously backtest.fee was silently ignored (always 0.001).
+            cfg_fee = self._config.get("backtest.fee", self._config.get("fee", None))
+            if cfg_fee is not None and self._fee_model is None:
+                try:
+                    self._fee_rate = float(cfg_fee)
+                except (TypeError, ValueError):
+                    logger.warning(f"Ignoring invalid backtest.fee={cfg_fee!r}")
+        self._callback_failures = 0
+
+        # Position stacking (multiple concurrent trades per pair) is not
+        # implemented in the iterative engine (open_trades is keyed by pair).
+        # Fail loudly instead of silently returning single-position results.
+        stacking = self._config.get(
+            "backtest.position_stacking",
+            self._config.get("position_stacking", False),
+        )
+        if stacking:
+            raise BacktestError(
+                "position_stacking=true is not supported by the backtest engine "
+                "(one open trade per pair). Set position_stacking=false or "
+                "implement stacking before backtesting."
+            )
 
         # Slippage: explicit argument > config (backtest.slippage / slippage) > 0
         if slippage is not None:
@@ -290,15 +330,14 @@ class BacktestEngine:
             logger.error("No data available for backtesting")
             return BacktestResult(strategy_name=strategy.__class__.__name__)
 
-        # Validate data
-        for pair, df in data.items():
-            if df.empty:
-                logger.warning(f"No data for {pair}, skipping")
-                continue
-            required_cols = {"date", "open", "high", "low", "close", "volume"}
-            missing = required_cols - set(df.columns)
-            if missing:
-                raise ValueError(f"Data for {pair} missing columns: {missing}")
+        # Clean + validate data (sort, dedupe, tz-normalize).
+        # In-memory `data=` previously skipped the cleaning that disk
+        # loading applies, so unsorted/duplicated frames silently misaligned
+        # signals via positional indexing.
+        data = self._clean_data(data)
+        if not data:
+            logger.error("No data available for backtesting")
+            return BacktestResult(strategy_name=strategy.__class__.__name__)
 
         # Initialize components
         wallets = Wallets(self._config, initial_balance=initial_balance)
@@ -334,6 +373,11 @@ class BacktestEngine:
         )
 
         # Build result
+        if self._callback_failures:
+            logger.warning(
+                f"Backtest finished with {self._callback_failures} "
+                "strategy-callback failures (see warnings above)"
+            )
         result = BacktestResult(
             strategy_name=strategy.__class__.__name__,
             trades=trades,
@@ -345,6 +389,7 @@ class BacktestEngine:
                 "max_open_trades": max_open_trades,
                 "initial_balance": initial_balance,
                 "fee_rate": self._fee_rate,
+                "callback_failures": self._callback_failures,
             },
             equity_curve=getattr(self, "_last_equity_curve", []),
         )
@@ -399,6 +444,66 @@ class BacktestEngine:
                     return pairs
         return ["BTC/USDT"]
 
+    @staticmethod
+    def _normalize_dates(df: "pd.DataFrame") -> "pd.DataFrame":
+        """Normalize the `date` column to tz-naive UTC for safe comparisons.
+
+        Data files may be tz-aware while `timerange` bounds and settlement
+        dates are naive (or vice versa); mixing them raises TypeError in
+        pandas/datetime comparisons. Converting aware -> UTC -> naive keeps
+        chronological order while making every downstream comparison safe.
+        """
+        df = df.copy()
+        dates = pd.to_datetime(df["date"], utc=True)
+        try:
+            dates = dates.dt.tz_convert(None)
+        except Exception:
+            pass
+        df["date"] = dates
+        return df
+
+    def _clean_data(
+        self, data: Dict[str, "pd.DataFrame"]
+    ) -> Dict[str, "pd.DataFrame"]:
+        """Sort, dedupe, tz-normalize and validate OHLCV frames.
+
+        Applied to both disk-loaded and in-memory `data=` frames so signal
+        precomputation (positional indexing) can never silently misalign.
+        """
+        cleaned: Dict[str, "pd.DataFrame"] = {}
+        required_cols = {"date", "open", "high", "low", "close", "volume"}
+        for pair, df in data.items():
+            if df is None or df.empty:
+                logger.warning(f"No data for {pair}, skipping")
+                continue
+            missing = required_cols - set(df.columns)
+            if missing:
+                raise BacktestError(f"Data for {pair} missing columns: {sorted(missing)}")
+            df = self._normalize_dates(df)
+            # Drop exact-duplicate timestamps (keep last), then sort.
+            before = len(df)
+            df = df.drop_duplicates(subset="date", keep="last")
+            if len(df) < before:
+                logger.warning(
+                    f"Removed {before - len(df)} duplicate candles for {pair}"
+                )
+            df = df.sort_values("date").reset_index(drop=True)
+            # Basic OHLC sanity: high >= max(open, close), low <= min(...)
+            # (only warn — some feeds include gaps/bad ticks).
+            try:
+                bad = df[(df["high"] < df[["open", "close"]].max(axis=1)) | (
+                    df["low"] > df[["open", "close"]].min(axis=1))]
+                if not bad.empty:
+                    logger.warning(
+                        f"{pair}: {len(bad)} candles have high/low "
+                        "inconsistent with open/close"
+                    )
+            except Exception:
+                pass
+            if not df.empty:
+                cleaned[pair] = df
+        return cleaned
+
     def _load_data(
         self,
         pairlist: List[str],
@@ -433,21 +538,32 @@ class BacktestEngine:
                 if df.index.name == "date" or isinstance(df.index, pd.DatetimeIndex):
                     df = df.reset_index()
                 else:
-                    df["date"] = pd.date_range(end=datetime.now(), periods=len(df), freq=timeframe)
+                    raise BacktestError(
+                        f"Data for {pair} has no 'date' column or DatetimeIndex. "
+                        "Refusing to fabricate timestamps (previous behavior "
+                        "generated date_range with an invalid freq and anchored "
+                        "at now, silently breaking timerange filtering)."
+                    )
 
-            df["date"] = pd.to_datetime(df["date"])
+            df = self._normalize_dates(df)
 
-            if start_date:
-                df = df[df["date"] >= start_date]
-            if end_date:
-                df = df[df["date"] <= end_date]
+            # Timerange bounds are naive; df dates are normalized naive above,
+            # so comparisons are always safe.
+            if start_date is not None:
+                start_naive = pd.Timestamp(start_date).tz_localize(None) \
+                    if getattr(pd.Timestamp(start_date), "tzinfo", None) else start_date
+                df = df[df["date"] >= start_naive]
+            if end_date is not None:
+                end_naive = pd.Timestamp(end_date).tz_localize(None) \
+                    if getattr(pd.Timestamp(end_date), "tzinfo", None) else end_date
+                df = df[df["date"] <= end_naive]
 
             df = df.sort_values("date").reset_index(drop=True)
 
             if not df.empty:
                 data[pair] = df
 
-        return data
+        return self._clean_data(data)
 
     def _run_backtest_loop(
         self,
@@ -550,8 +666,11 @@ class BacktestEngine:
                 if idx < startup_bars:
                     continue
 
-                # Update data provider index
-                bt_dp.set_current_index(pair, idx + 1)
+                # Update data provider index. Expose only CLOSED candles
+                # (exclude the in-progress current candle) so
+                # historic_ohlcv() cannot see the close it is trading on —
+                # in live trading that close is unknown until the candle ends.
+                bt_dp.set_current_index(pair, idx)
 
                 # Scalar reads from precomputed column arrays
                 prices = price_arrays[pair]
@@ -591,21 +710,28 @@ class BacktestEngine:
                         position_manager=position_manager,
                         open_trades=open_trades,
                         stake_amount=stake_amount,
+                        max_open_trades=max_open_trades,
                     )
 
-            # Sample mark-to-market equity once per timestamp
+            # Sample mark-to-market equity once per timestamp (net of fees,
+            # leverage-aware — previously gross-only and unleveraged, so the
+            # curve drifted above final_balance and understated leverage).
             equity = wallets.get_free(self._config.stake_currency)
             for trade in open_trades.values():
                 last_idx = pair_last_index.get(trade.pair)
                 if last_idx is None:
                     continue
                 rate = price_arrays[trade.pair]["close"][last_idx]
+                leverage = trade.leverage or 1.0
                 gross_pnl = (
                     (rate - trade.open_rate) * trade.amount
                     if not trade.is_short
                     else (trade.open_rate - rate) * trade.amount
+                ) * leverage
+                est_close_fee = self._calc_fee(
+                    rate * trade.amount, is_sell=not trade.is_short
                 )
-                equity += trade.stake_amount + gross_pnl
+                equity += trade.stake_amount + gross_pnl - trade.fee_open - est_close_fee
             equity_curve.append((current_date, equity))
 
         # Close any remaining open trades at the last price
@@ -633,18 +759,193 @@ class BacktestEngine:
         self._last_equity_curve = equity_curve
         return closed_bt_trades
 
-    @staticmethod
-    def _safe_callback(label: str, fn, default):
+    def _safe_callback(self, label: str, fn, default):
         """Invoke an optional strategy callback, logging failures.
 
         A crashing callback must not abort the backtest loop, but the
         failure must be visible (previously these were swallowed silently).
+        Failures are counted on the engine for post-run visibility.
         """
         try:
             return fn()
         except Exception as e:
+            self._callback_failures += 1
             logger.warning(f"Strategy callback {label} failed: {e}", exc_info=True)
             return default
+
+    @staticmethod
+    def _detect_market_type(pair: str) -> "MarketType":
+        """Infer market type from pair format (backtest entries only).
+
+        Previously all backtest trades were hardcoded to CRYPTO, mislabeling
+        stock/futures positions. Uses lightweight format detection matching
+        the settlement rules: 6-digit A-share codes -> STOCK, `@EXCH`
+        futures/option codes -> FUTURE, everything else -> CRYPTO.
+        """
+        import re
+
+        upper = (pair or "").upper()
+        if re.match(r"^\d{6}\.(SZ|SH|BJ)$", upper) or re.match(r"^[036]\d{5}$", upper):
+            return MarketType.STOCK
+        if re.match(r"^[A-Z]+\d+@[A-Z]+$", upper) or re.match(r"^\d+@[A-Z]+$", upper):
+            return MarketType.FUTURE
+        return MarketType.CRYPTO
+
+    def _net_profit_ratio(self, trade: "LocalTrade", current_rate: float) -> float:
+        """Net (fee-aware) profit ratio at a hypothetical exit price.
+
+        `LocalTrade.calc_profit_ratio` is gross (excludes fees), so ROI /
+        trailing / custom checks triggered on gross systematically overstate.
+        Estimates the close fee at `current_rate` for a like-for-like net
+        comparison. Short/long sides use their respective fee directions.
+        """
+        if not trade.open_rate or trade.open_rate <= 0 or current_rate <= 0:
+            return 0.0
+        leverage = trade.leverage or 1.0
+        if trade.is_short:
+            gross = (trade.open_rate - current_rate) / trade.open_rate * leverage
+        else:
+            gross = (current_rate - trade.open_rate) / trade.open_rate * leverage
+        try:
+            est_close_fee = self._calc_fee(
+                current_rate * trade.amount, is_sell=not trade.is_short
+            )
+        except Exception:
+            est_close_fee = 0.0
+        fee_drag = ((trade.fee_open + est_close_fee) / trade.stake_amount) \
+            if trade.stake_amount > 0 else 0.0
+        return gross - fee_drag
+
+    @staticmethod
+    def _tz_safe_le(a: object, b: object) -> bool:
+        """`a < b` comparison that tolerates naive/aware datetime mixes."""
+        from datetime import datetime as _dt
+
+        if isinstance(a, _dt) and isinstance(b, _dt):
+            if (a.tzinfo is None) != (b.tzinfo is None):
+                # Drop tzinfo (treat as wall-clock) rather than crashing.
+                try:
+                    a = a.replace(tzinfo=None)
+                except Exception:
+                    pass
+                try:
+                    b = b.replace(tzinfo=None)
+                except Exception:
+                    pass
+        try:
+            return a < b  # type: ignore[operator]
+        except TypeError:
+            return False
+
+    def _resolve_stake(
+        self,
+        stake_amount: Optional[float],
+        wallets: Wallets,
+        open_trades: Dict[str, LocalTrade],
+        max_open_trades: int,
+    ) -> float:
+        """Resolve the proposed stake, supporting `stake_amount='unlimited'`.
+
+        Previously unlimited collapsed to 0 via `Config.stake_amount`,
+        producing silent zero-trade backtests. Now sizes as
+        available / remaining_slots (at least the current slot).
+        """
+        if stake_amount is not None:
+            return float(stake_amount)
+        available = wallets.get_available_stake_amount()
+        remaining = max(1, max_open_trades - len(open_trades))
+        return available / remaining if remaining > 0 else available
+
+    def _resolve_leverage(
+        self, strategy: IStrategy, pair: str, current_rate: float,
+        current_date: datetime, entry_tag: Optional[str], side: str,
+    ) -> float:
+        """Resolve leverage via `strategy.leverage()` (default 1.0)."""
+        try:
+            lev = self._safe_callback(
+                f"leverage[{side}]({pair})",
+                lambda: strategy.leverage(
+                    pair=pair,
+                    current_time=current_date,
+                    current_rate=current_rate,
+                    proposed_leverage=1.0,
+                    max_leverage=10,
+                    entry_tag=entry_tag,
+                    side=side,
+                ),
+                1.0,
+            )
+            lev_f = float(lev or 1.0)
+            if lev_f <= 0 or lev_f != lev_f:  # NaN guard
+                return 1.0
+            return lev_f
+        except Exception:
+            return 1.0
+
+    def _resolve_entry_rate(
+        self, strategy: IStrategy, pair: str, current_rate: float,
+        current_date: datetime, entry_tag: Optional[str], side: str,
+    ) -> float:
+        """Apply `custom_entry_price()` then adverse slippage."""
+        proposed = current_rate
+        try:
+            custom = self._safe_callback(
+                f"custom_entry_price[{side}]({pair})",
+                lambda: strategy.custom_entry_price(
+                    pair=pair,
+                    current_time=current_date,
+                    proposed_rate=current_rate,
+                    entry_tag=entry_tag,
+                    side=side,
+                ),
+                current_rate,
+            )
+            if custom is not None and float(custom) > 0:
+                proposed = float(custom)
+        except Exception:
+            proposed = current_rate
+        return self._slipped_price(proposed, buy=(side == "long"))
+
+    def _open_backtest_trade(
+        self, pair: str, strategy: IStrategy, timeframe: str,
+        fill_rate: float, actual_stake: float, enter_tag: Optional[str],
+        is_short: bool, current_date: datetime, current_rate: float,
+        wallets: Wallets, open_trades: Dict[str, LocalTrade],
+        leverage: float,
+    ) -> None:
+        amount = actual_stake / fill_rate if fill_rate > 0 else 0
+        if amount <= 0:
+            return
+        fee = self._calc_fee(actual_stake, is_sell=is_short)
+        trade = LocalTrade(
+            pair=pair,
+            exchange=self._config.exchange_name,
+            strategy=strategy.__class__.__name__,
+            timeframe=timeframe,
+            market_type=self._detect_market_type(pair),
+            open_date=current_date,
+            open_rate=fill_rate,
+            amount=amount,
+            stake_amount=actual_stake,
+            fee_open=fee,
+            enter_tag=enter_tag,
+            max_rate=fill_rate,
+            min_rate=fill_rate,
+            is_short=is_short,
+            leverage=leverage,
+        )
+        stoploss = getattr(strategy, 'stoploss', 0)
+        if stoploss != 0:
+            trade.stop_loss_pct = stoploss
+            trade.stop_loss = fill_rate * (1 - stoploss) if is_short \
+                else fill_rate * (1 + stoploss)
+            trade.initial_stop_loss_pct = stoploss
+            trade.initial_stop_loss = trade.stop_loss
+        open_trades[pair] = trade
+        # Fees (open + close) are settled once at trade close via calc_profit;
+        # deducting fee_open here as well would double-charge it.
+        wallets.deduct_amount(self._config.stake_currency, actual_stake)
+        logger.debug(f"Entry: {pair} @ {fill_rate}, stake={actual_stake}")
 
     def _check_entry(
         self,
@@ -657,7 +958,8 @@ class BacktestEngine:
         wallets: Wallets,
         position_manager: PositionManager,
         open_trades: Dict[str, LocalTrade],
-        stake_amount: float,
+        stake_amount: Optional[float],
+        max_open_trades: int = 3,
     ) -> None:
         """Check for entry signals and execute trades.
 
@@ -688,25 +990,31 @@ class BacktestEngine:
                 if not confirmed:
                     return
 
-                # Calculate stake
-                actual_stake = stake_amount
+                # Calculate stake (supports unlimited + custom override)
+                proposed = self._resolve_stake(
+                    stake_amount, wallets, open_trades, max_open_trades
+                )
+                leverage = self._resolve_leverage(
+                    strategy, pair, current_rate, current_date, enter_tag, "long"
+                )
                 custom_stake = self._safe_callback(
                     f"custom_stake_amount[long]({pair})",
                     lambda: strategy.custom_stake_amount(
                         pair=pair,
                         current_time=current_date,
                         current_rate=current_rate,
-                        proposed_stake=stake_amount,
+                        proposed_stake=proposed,
                         min_stake=0,
                         max_stake=wallets.get_available_stake_amount(),
-                        leverage=1.0,
+                        leverage=leverage,
                         entry_tag=enter_tag,
                         side="long",
                     ),
                     None,
                 )
-                if custom_stake is not None and custom_stake > 0:
-                    actual_stake = custom_stake
+                actual_stake = custom_stake if (
+                    custom_stake is not None and custom_stake > 0
+                ) else proposed
 
                 available = wallets.get_available_stake_amount()
                 actual_stake = min(actual_stake, available)
@@ -714,53 +1022,20 @@ class BacktestEngine:
                 if actual_stake <= 0:
                     return
 
-                # Slippage: buys fill higher than the reference close
-                fill_rate = self._slipped_price(current_rate, buy=True)
-
-                amount = actual_stake / fill_rate if fill_rate > 0 else 0
-                if amount <= 0:
-                    return
-
-                fee = self._calc_fee(actual_stake, is_sell=False)
-
-                trade = LocalTrade(
-                    pair=pair,
-                    exchange=self._config.exchange_name,
-                    strategy=strategy.__class__.__name__,
-                    timeframe=timeframe,
-                    market_type=MarketType.CRYPTO,
-                    open_date=current_date,
-                    open_rate=fill_rate,
-                    amount=amount,
-                    stake_amount=actual_stake,
-                    fee_open=fee,
-                    enter_tag=enter_tag,
-                    max_rate=fill_rate,
-                    min_rate=fill_rate,
-                    is_short=False,
+                fill_rate = self._resolve_entry_rate(
+                    strategy, pair, current_rate, current_date, enter_tag, "long"
                 )
-
-                # Set stoploss
-                stoploss = getattr(strategy, 'stoploss', 0)
-                if stoploss != 0:
-                    trade.stop_loss_pct = stoploss
-                    trade.stop_loss = fill_rate * (1 + stoploss)
-                    trade.initial_stop_loss_pct = stoploss
-                    trade.initial_stop_loss = trade.stop_loss
-
-                open_trades[pair] = trade
-                # Fees (open + close) are settled once at trade close via calc_profit;
-                # deducting fee_open here as well would double-charge it.
-                wallets.deduct_amount(self._config.stake_currency, actual_stake)
-
-                logger.debug(f"Entry: {pair} @ {fill_rate}, stake={actual_stake}")
+                self._open_backtest_trade(
+                    pair, strategy, timeframe, fill_rate, actual_stake,
+                    enter_tag, False, current_date, current_rate,
+                    wallets, open_trades, leverage,
+                )
                 return
 
             # Check for short entry
             if getattr(strategy, 'can_short', False):
                 enter_short = signal_row.get("enter_short", 0)
                 if enter_short == 1:
-                    # Similar to long but with is_short=True
                     confirmed = self._safe_callback(
                         f"confirm_trade_entry[short]({pair})",
                         lambda: strategy.confirm_trade_entry(
@@ -778,48 +1053,44 @@ class BacktestEngine:
                     if not confirmed:
                         return
 
-                    actual_stake = stake_amount
+                    proposed = self._resolve_stake(
+                        stake_amount, wallets, open_trades, max_open_trades
+                    )
+                    leverage = self._resolve_leverage(
+                        strategy, pair, current_rate, current_date, enter_tag, "short"
+                    )
+                    custom_stake = self._safe_callback(
+                        f"custom_stake_amount[short]({pair})",
+                        lambda: strategy.custom_stake_amount(
+                            pair=pair,
+                            current_time=current_date,
+                            current_rate=current_rate,
+                            proposed_stake=proposed,
+                            min_stake=0,
+                            max_stake=wallets.get_available_stake_amount(),
+                            leverage=leverage,
+                            entry_tag=enter_tag,
+                            side="short",
+                        ),
+                        None,
+                    )
+                    actual_stake = custom_stake if (
+                        custom_stake is not None and custom_stake > 0
+                    ) else proposed
                     available = wallets.get_available_stake_amount()
                     actual_stake = min(actual_stake, available)
 
                     if actual_stake <= 0:
                         return
 
-                    # Slippage: shorts sell lower than the reference close
-                    fill_rate = self._slipped_price(current_rate, buy=False)
-
-                    amount = actual_stake / fill_rate if fill_rate > 0 else 0
-                    if amount <= 0:
-                        return
-
-                    fee = self._calc_fee(actual_stake, is_sell=True)
-
-                    trade = LocalTrade(
-                        pair=pair,
-                        exchange=self._config.exchange_name,
-                        strategy=strategy.__class__.__name__,
-                        timeframe=timeframe,
-                        market_type=MarketType.CRYPTO,
-                        open_date=current_date,
-                        open_rate=fill_rate,
-                        amount=amount,
-                        stake_amount=actual_stake,
-                        fee_open=fee,
-                        enter_tag=enter_tag,
-                        max_rate=fill_rate,
-                        min_rate=fill_rate,
-                        is_short=True,
+                    fill_rate = self._resolve_entry_rate(
+                        strategy, pair, current_rate, current_date, enter_tag, "short"
                     )
-
-                    stoploss = getattr(strategy, 'stoploss', 0)
-                    if stoploss != 0:
-                        trade.stop_loss_pct = stoploss
-                        trade.stop_loss = fill_rate * (1 - stoploss)
-                        trade.initial_stop_loss_pct = stoploss
-                        trade.initial_stop_loss = trade.stop_loss
-
-                    open_trades[pair] = trade
-                    wallets.deduct_amount(self._config.stake_currency, actual_stake)
+                    self._open_backtest_trade(
+                        pair, strategy, timeframe, fill_rate, actual_stake,
+                        enter_tag, True, current_date, current_rate,
+                        wallets, open_trades, leverage,
+                    )
 
         except Exception as e:
             logger.warning(f"Error checking entry for {pair}: {e}", exc_info=True)
@@ -843,25 +1114,48 @@ class BacktestEngine:
         Signal columns come from the precomputed per-pair dataframe; only
         user callbacks (custom_exit / confirm_trade_exit) run per candle.
         """
-        # Update rate tracking
+        # Track intra-candle extremes (previously close-only, so trailing
+        # stops missed high/low spikes and triggered late/never).
+        trade.update_rate(current_high)
+        trade.update_rate(current_low)
         trade.update_rate(current_rate)
 
-        # Profit ratio at current rate - identical for trailing/ROI/custom
-        # checks below, so compute once.
+        # Gross ratio (strategy semantics) + net ratio (fee-aware, for
+        # trigger decisions). ROI/trailing/custom previously fired on gross,
+        # systematically overstating after-fee returns.
         profit_ratio = trade.calc_profit_ratio(current_rate)
+        net_ratio = self._net_profit_ratio(trade, current_rate)
 
         # 0. Enforce T+1/T+N settlement: the position cannot be sold before
-        # its settlement date (compared against simulated time, NOT wall clock)
+        # its settlement date (compared against simulated time, NOT wall clock).
+        # Uses tz-safe comparison (naive/aware mixes previously crashed).
         rule = trade.settlement_rule
         settlement_date = trade.settlement_date
         if (
             rule is not None
             and rule.settlement_type != SettlementType.T0
             and settlement_date is not None
-            and current_date < settlement_date
+            and self._tz_safe_le(current_date, settlement_date)
         ):
             logger.debug(
                 f"Exit blocked for {trade.pair}: T+1 settlement until {settlement_date}"
+            )
+            return
+
+        # 0b. Liquidation: leveraged loss wiping margin forces exit.
+        # Previously ignored (no margin model), letting insolvent positions
+        # ride to profit. Uses gross ratio vs -1/leverage.
+        leverage = trade.leverage or 1.0
+        if leverage > 1.0 and profit_ratio <= -1.0 / leverage:
+            self._close_trade(
+                trade=trade,
+                rate=current_rate,
+                exit_reason="liquidation",
+                current_date=current_date,
+                position_manager=position_manager,
+                wallets=wallets,
+                open_trades=open_trades,
+                closed_bt_trades=closed_bt_trades,
             )
             return
 
@@ -896,7 +1190,7 @@ class BacktestEngine:
             trailing_stop_positive_offset = getattr(strategy, 'trailing_stop_positive_offset', 0.0)
             trailing_only_offset = getattr(strategy, 'trailing_only_offset_is_reached', False)
 
-            if not trailing_only_offset or profit_ratio >= trailing_stop_positive_offset:
+            if not trailing_only_offset or net_ratio >= trailing_stop_positive_offset:
                 if trade.is_short:
                     new_stop = trade.min_rate * (1 + trailing_stop_positive)
                     if new_stop < trade.stop_loss or trade.stop_loss == 0:
@@ -937,34 +1231,73 @@ class BacktestEngine:
                         )
                         return
 
-        # 3. Check ROI
+        # 3. Check ROI (fee-aware; honors ignore_roi_if_entry_signal).
+        # custom_roi() overrides the static table when it returns a value.
         minimal_roi = getattr(strategy, 'minimal_roi', {})
-        if minimal_roi:
-            trade_duration = (current_date - trade.open_date).total_seconds() / 60
-
-            for minutes_str, roi_value in sorted(
-                minimal_roi.items(),
-                key=lambda x: int(x[0]) if str(x[0]).isdigit() else float("inf"),
-                reverse=True,
-            ):
+        custom_roi_target = self._safe_callback(
+            f"custom_roi({trade.pair})",
+            lambda: strategy.custom_roi(
+                pair=trade.pair,
+                current_time=current_date,
+                current_rate=current_rate,
+                current_profit=net_ratio,
+            ),
+            None,
+        )
+        roi_table = dict(minimal_roi) if minimal_roi else {}
+        if custom_roi_target is not None:
+            try:
+                roi_table = {"0": float(custom_roi_target)}
+            except (TypeError, ValueError):
+                pass
+        if roi_table:
+            # Freqtrade: skip ROI when a fresh entry signal exists and the
+            # strategy opts out of ROI exits on entry candles.
+            ignore_roi = getattr(strategy, 'ignore_roi_if_entry_signal', False)
+            has_entry_signal = False
+            if ignore_roi:
                 try:
-                    minutes = int(minutes_str)
-                except ValueError:
-                    continue
-                if trade_duration >= minutes and profit_ratio >= roi_value:
-                    self._close_trade(
-                        trade=trade,
-                        rate=current_rate,
-                        exit_reason=f"roi_{minutes}m",
-                        current_date=current_date,
-                        position_manager=position_manager,
-                        wallets=wallets,
-                        open_trades=open_trades,
-                        closed_bt_trades=closed_bt_trades,
-                    )
-                    return
+                    if trade.is_short:
+                        has_entry_signal = signal_row.get("enter_short", 0) == 1
+                    else:
+                        has_entry_signal = signal_row.get("enter_long", 0) == 1
+                except Exception:
+                    has_entry_signal = False
+            if not (ignore_roi and has_entry_signal):
+                try:
+                    trade_duration = (
+                        current_date - trade.open_date
+                    ).total_seconds() / 60
+                except TypeError:
+                    # naive/aware mix — fall back to wall-clock diff
+                    trade_duration = (
+                        current_date.replace(tzinfo=None)
+                        - trade.open_date.replace(tzinfo=None)
+                    ).total_seconds() / 60
 
-        # 4. Check custom exit
+                for minutes_str, roi_value in sorted(
+                    roi_table.items(),
+                    key=lambda x: int(x[0]) if str(x[0]).isdigit() else float("inf"),
+                    reverse=True,
+                ):
+                    try:
+                        minutes = int(minutes_str)
+                    except ValueError:
+                        continue
+                    if trade_duration >= minutes and net_ratio >= roi_value:
+                        self._close_trade(
+                            trade=trade,
+                            rate=current_rate,
+                            exit_reason=f"roi_{minutes}m",
+                            current_date=current_date,
+                            position_manager=position_manager,
+                            wallets=wallets,
+                            open_trades=open_trades,
+                            closed_bt_trades=closed_bt_trades,
+                        )
+                        return
+
+        # 4. Check custom exit (fee-aware profit; honors exit_profit_only)
         exit_reason = self._safe_callback(
             f"custom_exit({trade.pair})",
             lambda: strategy.custom_exit(
@@ -972,25 +1305,50 @@ class BacktestEngine:
                 trade=trade,
                 current_time=current_date,
                 current_rate=current_rate,
-                current_profit=profit_ratio,
+                current_profit=net_ratio,
                 exit_reason=None,
             ),
             None,
         )
         if exit_reason:
-            self._close_trade(
-                trade=trade,
-                rate=current_rate,
-                exit_reason=exit_reason,
-                current_date=current_date,
-                position_manager=position_manager,
-                wallets=wallets,
-                open_trades=open_trades,
-                closed_bt_trades=closed_bt_trades,
-            )
-            return
+            if getattr(strategy, 'exit_profit_only', False) and net_ratio <= 0:
+                pass  # loss-making custom exit suppressed by strategy flag
+            else:
+                # Allow custom_exit_price() to adjust the fill before slippage
+                exit_rate = current_rate
+                try:
+                    custom_px = self._safe_callback(
+                        f"custom_exit_price({trade.pair})",
+                        lambda: strategy.custom_exit_price(
+                            pair=trade.pair,
+                            trade=trade,
+                            current_time=current_date,
+                            proposed_rate=current_rate,
+                            current_profit=net_ratio,
+                            exit_tag=exit_reason,
+                        ),
+                        current_rate,
+                    )
+                    if custom_px is not None and float(custom_px) > 0:
+                        exit_rate = float(custom_px)
+                except Exception:
+                    exit_rate = current_rate
+                self._close_trade(
+                    trade=trade,
+                    rate=exit_rate,
+                    exit_reason=exit_reason,
+                    current_date=current_date,
+                    position_manager=position_manager,
+                    wallets=wallets,
+                    open_trades=open_trades,
+                    closed_bt_trades=closed_bt_trades,
+                )
+                return
 
-        # 5. Check exit signal from strategy (precomputed columns)
+        # 5. Check exit signal from strategy (precomputed columns).
+        # Honors use_exit_signal=False and exit_profit_only=True.
+        if not getattr(strategy, 'use_exit_signal', True):
+            return
         exit_long = signal_row.get("exit_long", 0)
         exit_short = signal_row.get("exit_short", 0)
         exit_tag = signal_row.get("exit_tag", None)
@@ -1000,6 +1358,9 @@ class BacktestEngine:
             should_exit = True
         elif not trade.is_short and exit_long == 1:
             should_exit = True
+        if should_exit and getattr(strategy, 'exit_profit_only', False):
+            if net_ratio <= 0:
+                should_exit = False
 
         if should_exit:
             # Confirm exit
@@ -1054,12 +1415,28 @@ class BacktestEngine:
         trade.exit_reason = exit_reason
 
         profit_abs = trade.calc_profit(rate)
-        profit_pct = trade.calc_profit_ratio(rate) * 100
-        duration_hours = (current_date - trade.open_date).total_seconds() / 3600
+        # Net pct consistent with net abs (previously gross ratio, so pct
+        # overstated vs abs whenever fees applied).
+        if trade.stake_amount > 0:
+            profit_pct = profit_abs / trade.stake_amount * 100
+        else:
+            profit_pct = trade.calc_profit_ratio(rate) * 100
+        try:
+            duration_hours = (
+                current_date - trade.open_date
+            ).total_seconds() / 3600
+        except TypeError:
+            duration_hours = (
+                current_date.replace(tzinfo=None)
+                - trade.open_date.replace(tzinfo=None)
+            ).total_seconds() / 3600
 
-        # Update wallet
+        # Update wallet (floor at 0: leveraged wipeout cannot add negative;
+        # Wallets.add_amount rejects negative amounts).
         total_return = trade.stake_amount + profit_abs
-        wallets.add_amount(self._config.stake_currency, total_return)
+        wallets.add_amount(
+            self._config.stake_currency, max(0.0, total_return)
+        )
 
         # Record trade
         bt_trade = BacktestTrade(
