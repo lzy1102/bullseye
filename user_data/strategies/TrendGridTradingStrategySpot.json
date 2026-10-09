@@ -17,7 +17,7 @@
       "max_open_trades": 2
     },
     "buy": {
-      "adjust_profit": 0.04,
+      "adjust_profit": 0.02,
       "grid_levels": 5,
       "grid_long_size": 0.02,
       "lock_adjust_time": 36,

@@ -57,7 +57,7 @@ class TrendGridTradingStrategySpot(IStrategy):
     max_dca_count = IntParameter(5, 20, default=7, space="buy", optimize=True)  # Maximum number of DCA attempts
     grid_levels = IntParameter(5, 20, default=5, space="buy", optimize=True)
     grid_long_size = DecimalParameter(0.01, 0.09, default=0.02, space="buy", optimize=True)
-    adjust_profit = DecimalParameter(0.03, 0.10, default=0.04, space="buy", optimize=True)
+    adjust_profit = DecimalParameter(0.01, 0.10, default=0.02, space="buy", optimize=True)
     min_roi = DecimalParameter(0.01, 0.03, default=0.015, space="buy", optimize=True)
     rebound_pct = DecimalParameter(0.001, 0.1, default=0.005, space="buy", optimize=True)
     lock_adjust_time = IntParameter(3, 60, default=36, space="buy", optimize=True)
