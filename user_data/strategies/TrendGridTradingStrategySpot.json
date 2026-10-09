@@ -21,7 +21,7 @@
       "grid_levels": 5,
       "grid_long_size": 0.02,
       "lock_adjust_time": 36,
-      "max_dca_count": 3,
+      "max_dca_count": 2,
       "min_gap_ratio": 0.009,
       "min_roi": 0.015,
       "rebound_pct": 0.005,
