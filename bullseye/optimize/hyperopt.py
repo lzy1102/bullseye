@@ -610,7 +610,10 @@ class HyperoptEngine:
             params_file: Freqtrade hyperopt params JSON (ft_stratparam_v).
                 buy/sell values become the Parameter defaults and
                 roi/stoploss/trailing sections override the strategy before
-                sampling, so a previous tuning is the search center.
+                sampling. Note this orients (not centers) the search:
+                sampled dimensions still explore their full ranges; the
+                file values govern non-searched params and the
+                roi/stoploss/trailing setup.
 
         Returns:
             Self (for chaining)

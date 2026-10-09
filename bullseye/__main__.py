@@ -364,7 +364,7 @@ def download_data_cmd(ctx, exchange: Optional[str], market: str, datafeed: Optio
 @click.option('--walk-forward', type=int, default=0,
               help='Walk-forward splits (>=2: re-optimize per expanding window)')
 @click.option('--params-file', type=str, default=None,
-              help='Freqtrade hyperopt params JSON: values become search centers')
+              help='Freqtrade hyperopt params JSON: applies tuned roi/stoploss/trailing and defaults for non-searched params')
 @click.option('--export', type=str, help='Export results to JSON file')
 @click.option('--random-state', type=int, help='Random seed for reproducibility')
 @click.pass_context
