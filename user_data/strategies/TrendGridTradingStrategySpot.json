@@ -17,14 +17,14 @@
       "max_open_trades": 2
     },
     "buy": {
-      "adjust_profit": 0.02,
+      "adjust_atr_mult": 1.0,
       "grid_levels": 5,
-      "grid_long_size": 0.02,
+      "grid_atr_mult": 1.0,
       "lock_adjust_time": 36,
       "max_dca_count": 2,
       "min_gap_ratio": 0.009,
       "min_roi": 0.015,
-      "rebound_pct": 0.005,
+      "rebound_atr_mult": 0.5,
       "sma_timeperiod": 9,
       "break_even_pct": 5,
       "break_even_roi": 0.005,

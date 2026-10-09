@@ -56,10 +56,14 @@ class TrendGridTradingStrategySpot(IStrategy):
     sma_timeperiod = IntParameter(5, 20, default=9, space="buy", optimize=True)
     max_dca_count = IntParameter(1, 10, default=2, space="buy", optimize=True)  # Maximum number of DCA attempts
     grid_levels = IntParameter(5, 20, default=5, space="buy", optimize=True)
-    grid_long_size = DecimalParameter(0.01, 0.09, default=0.02, space="buy", optimize=True)
-    adjust_profit = DecimalParameter(0.01, 0.10, default=0.02, space="buy", optimize=True)
+    # Grid rungs in ATR multiples (replaces fixed grid_long_size): rung i
+    # sits at sma * (1 - i * mult * atr/close). Adaptive to volatility.
+    grid_atr_mult = DecimalParameter(0.5, 4.0, default=1.0, space="buy", optimize=True)
+    # DCA trigger in ATR multiples of drawdown from average cost.
+    adjust_atr_mult = DecimalParameter(0.5, 4.0, default=1.0, space="buy", optimize=True)
     min_roi = DecimalParameter(0.01, 0.03, default=0.015, space="buy", optimize=True)
-    rebound_pct = DecimalParameter(0.001, 0.1, default=0.005, space="buy", optimize=True)
+    # Stabilization rebound in ATR multiples (replaces fixed rebound_pct).
+    rebound_atr_mult = DecimalParameter(0.1, 2.0, default=0.5, space="buy", optimize=True)
     lock_adjust_time = IntParameter(3, 60, default=36, space="buy", optimize=True)
     min_gap_ratio = DecimalParameter(0.001, 0.01, default=0.009, space="buy", optimize=True)
     # 几次追仓后触发回本平仓
@@ -112,8 +116,9 @@ class TrendGridTradingStrategySpot(IStrategy):
         return dataframe
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        trend_now = dataframe['trend_1d'].iloc[-1] if 'trend_1d' in dataframe else 'n/a'
         logger.info(
-            f"{metadata['pair']} 1天时间框架，当前趋势 {dataframe['trend_1d'].iloc[-1]},ma_5d {dataframe['ma_5d_1d'].iloc[-1]}, ma_10d {dataframe['ma_10d_1d'].iloc[-1]}")
+            f"{metadata['pair']} 1天时间框架，当前趋势 {trend_now}")
         # 计算 ADX 指标
         dataframe['adx'] = ta.ADX(dataframe['high'], dataframe['low'], dataframe['close'], timeperiod=14)
         dataframe['plus_di'] = ta.PLUS_DI(dataframe['high'], dataframe['low'], dataframe['close'], timeperiod=14)
@@ -124,6 +129,10 @@ class TrendGridTradingStrategySpot(IStrategy):
         dataframe['sma_low'] = ta.SMA(dataframe['low'], timeperiod=self.sma_timeperiod.value)
         dataframe['sma_high'] = ta.SMA(dataframe['high'], timeperiod=self.sma_timeperiod.value)
         dataframe['sma_open'] = ta.SMA(dataframe['open'], timeperiod=self.sma_timeperiod.value)
+
+        dataframe['atr'] = ta.ATR(
+            dataframe['high'], dataframe['low'], dataframe['close'],
+            timeperiod=14)
 
            # ========== 1. 基础MA计算 ==========
         for period in [5, 10,20]:
@@ -153,15 +162,22 @@ class TrendGridTradingStrategySpot(IStrategy):
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         sma = dataframe['sma']
         close = dataframe['close']
-        trend_1d = dataframe['trend_1d']
+        # Without 1d data (e.g. in-memory runs) fall back to sideways: the
+        # grid leg still works, only the daily filter is inert.
+        trend_1d = (dataframe['trend_1d'] if 'trend_1d' in dataframe
+                    else pd.Series(0, index=dataframe.index))
         prev_trend = trend_1d.shift(1)
+        # ATR-scaled grid rungs: rung i sits i * mult ATRs below the SMA.
+        # atr/close guards div-zero; NaN ATR (warmup) disables the grid.
+        atr_pct = (dataframe['atr'] / close.replace(0, np.nan)).fillna(1.0)
+        mult = float(self.grid_atr_mult.value)
         # ========== 多头入场信号 ==========
         # 1. 震荡网格入场：trend_1d==0 且价格跌破任意支撑层
         grid_long_trigger = (
                 (trend_1d >= 0) &  # 震荡或者多头，做网格多
                 pd.concat([
-                    close <= sma * (1 - i * self.grid_long_size.value)
-                    for i in range(1, self.grid_levels.value + 1)
+                    close <= sma * (1 - i * mult * atr_pct)
+                    for i in range(1, int(self.grid_levels.value) + 1)
                 ], axis=1).any(axis=1)
         )
         logger.info(f"{metadata['pair']} 当前网格是否做多 {grid_long_trigger.iloc[-1]}")
@@ -235,7 +251,8 @@ class TrendGridTradingStrategySpot(IStrategy):
 
         # 当前值（必须加 .iloc[-1]）
         sma_current = dataframe['sma'].iloc[-1]
-        trend_1d_current = dataframe['trend_1d'].iloc[-1]
+        trend_1d_current = (dataframe['trend_1d'].iloc[-1]
+                            if 'trend_1d' in dataframe else 0)
 
         # 保护：检查NaN
         if pd.isna(sma_current) or pd.isna(trend_1d_current):
@@ -266,15 +283,13 @@ class TrendGridTradingStrategySpot(IStrategy):
 
     # ------------------------------------------------------------------
     # 工具方法：判断是否“企稳”并返回建议补仓数量
-    #   做多：从开单以来最低价反弹 >= rebound_pct 才允许补仓
-    #   做空：从开单以来最高价回落 >= rebound_pct 才允许补仓
-    #   返回值：None 表示不补；>0 表示本次补仓的 stake 数量
+    #   做多：从开单以来最低价反弹 >= rebound_atr_mult 个 ATR 才允许补仓
+    #   返回值：True 企稳可补，False 等待
     # ------------------------------------------------------------------
     def stake_if_stable(self,
                         trade,
                         dataframe: DataFrame,
                         current_rate: float,
-                        rebound_pct: float = 0.01,  # 1 % 默认
                         ) -> bool:
         """
         仅在价格“企稳”后返回补仓 stake；否则返回 None。
@@ -284,8 +299,12 @@ class TrendGridTradingStrategySpot(IStrategy):
         if df_after.empty:
             return False
 
+        atr_now = df_after['atr'].iloc[-1] if 'atr' in df_after.columns else np.nan
+        if atr_now != atr_now or atr_now <= 0 or current_rate <= 0:  # NaN guard
+            return False
+        rebound_need = float(self.rebound_atr_mult.value) * atr_now
         extreme = df_after['low'].min()
-        condition = current_rate >= extreme * (1 + rebound_pct)
+        condition = (current_rate - extreme) >= rebound_need
 
         # 3. 满足企稳条件才返回补仓金额
         return True if condition else False
@@ -324,8 +343,8 @@ class TrendGridTradingStrategySpot(IStrategy):
             dataframe, _ = self.dp.get_analyzed_dataframe(trade.pair, self.timeframe)
             if dataframe is None or dataframe.empty:
                 return None
-            if not self.stake_if_stable(trade=trade, dataframe=dataframe, current_rate=current_rate,
-                                        rebound_pct=self.rebound_pct.value):
+            if not self.stake_if_stable(trade=trade, dataframe=dataframe,
+                                        current_rate=current_rate):
                 return None
 
             # 最大补仓次数
@@ -337,7 +356,13 @@ class TrendGridTradingStrategySpot(IStrategy):
             if int(pd.to_datetime(current_time).timestamp()) - timestamp_sec <= self.lock_adjust_time.value * 100:
                 return None
 
-            if (current_profit / (trade.leverage or 1.0)) >= -self.adjust_profit.value:
+            # ATR-scaled drawdown trigger: add only when underwater by
+            # adjust_atr_mult ATRs from average cost.
+            atr_now = dataframe['atr'].iloc[-1] if 'atr' in dataframe.columns else np.nan
+            if atr_now != atr_now or atr_now <= 0 or current_rate <= 0:
+                return None
+            atr_pct = atr_now / current_rate
+            if (current_profit / (trade.leverage or 1.0)) >= -float(self.adjust_atr_mult.value) * atr_pct:
                 return None
 
             filled_entries.append({
