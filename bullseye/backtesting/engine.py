@@ -71,6 +71,32 @@ class BacktestDataProvider:
         self._data = data
         self._pairlist = pairlist
         self._current_index: Dict[str, int] = {p: 0 for p in pairlist}
+        # Precomputed signal frames (indicators + entry/exit columns),
+        # attached by the engine after vectorized precomputation.
+        self._signal_data: Dict[str, pd.DataFrame] = {}
+
+    def set_signal_data(self, signal_data: Dict[str, pd.DataFrame]) -> None:
+        """Attach precomputed signal frames for analyzed reads."""
+        self._signal_data = signal_data or {}
+
+    def get_analyzed_dataframe(
+        self, pair: str, timeframe: str
+    ) -> tuple:
+        """Freqtrade-compat: (analyzed_df_up_to_now, signal_date).
+
+        Returns the precomputed signal frame sliced to closed candles only
+        (mirrors historic_ohlcv's no-lookahead rule). Falls back to raw
+        OHLCV when no signal frame is attached.
+        """
+        df = self._signal_data.get(pair, self._data.get(pair))
+        if df is None or df.empty:
+            return pd.DataFrame(), None
+        idx = self._current_index.get(pair, len(df))
+        if idx <= 0:
+            return pd.DataFrame(), None
+        sliced = df.iloc[:idx]
+        last_date = sliced["date"].iloc[-1] if "date" in sliced else None
+        return sliced.reset_index(drop=True), last_date
 
     def historic_ohlcv(
         self,
@@ -820,6 +846,9 @@ class BacktestEngine:
                     "for warm-up periods instead of dropna())."
                 )
 
+        # Expose analyzed frames to strategies (get_analyzed_dataframe).
+        bt_dp.set_signal_data(precomputed_signals)
+
         # Extract per-column numpy arrays once: O(1) scalar reads in the loop
         price_arrays: Dict[str, Dict[str, Any]] = {}
         signal_arrays: Dict[str, Dict[str, Any]] = {}
@@ -1484,6 +1513,11 @@ class BacktestEngine:
         )
         if add is None:
             return
+        # Freqtrade strategies may return (stake, tag) tuples.
+        if isinstance(add, (tuple, list)) and len(add) == 2:
+            add = add[0]
+            if add is None:
+                return
         try:
             add = float(add)
         except (TypeError, ValueError):
@@ -1511,6 +1545,7 @@ class BacktestEngine:
         trade.open_rate = total_cost / trade.amount if trade.amount > 0 else fill
         trade.stake_amount += add
         trade.fee_open += fee
+        trade.nr_of_successful_entries += 1
         trade.update_rate(fill)
         wallets.deduct_amount(self._config.stake_currency, add)
         logger.debug(

@@ -129,6 +129,11 @@ class LocalTrade:
 
     # ==================== Orders ====================
     orders: List[Dict[str, Any]] = field(default_factory=list)
+    # Freqtrade-compat: open (unfilled) orders; the iterative backtest
+    # fills immediately, so this stays empty (strategies may check it).
+    open_orders: List[Dict[str, Any]] = field(default_factory=list)
+    # Freqtrade-compat: number of successful entries (1 + DCA adds).
+    nr_of_successful_entries: int = 1
 
     # ==================== T+1 Support ====================
     # Settlement rule (auto-detected if None)
