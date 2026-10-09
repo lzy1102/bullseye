@@ -28,17 +28,13 @@ class TrendGridTradingStrategySpot(IStrategy):
 
     # ROI/trailing taken from the tuned TrendGridTradingStrategySpot.json,
     # then raised to the 10% target: only +10% exits (any duration).
-    minimal_roi = {
-        "0": 0.10,
-    }
+    # Pure trend switch: entries on 0->1 flips, exits on -1 reversal.
+    # ROI / trailing / stoploss all off — nothing else may exit.
+    minimal_roi: dict = {}
 
-    # NOTE: json carries stoploss -100 (freqtrade "effectively off").
-    # Bullseye keeps an explicit -0.2 floor instead; trailing exits first.
-    stoploss = -0.2
-    trailing_stop = True
+    stoploss: float = 0
+    trailing_stop = False
     # process_only_new_candles = True
-    # 10% 才启动跟踪，启动后允许从最高点回吐 2%（落袋约 8%+）。
-    # 回吐设太小会被噪音洗出；要锁死 10% 把 positive 改 0.005。
     trailing_stop_positive = 0.02
     trailing_stop_positive_offset = 0.10
     trailing_only_offset_is_reached = True  # 只有达到 offset 才开始跟踪
@@ -196,18 +192,17 @@ class TrendGridTradingStrategySpot(IStrategy):
         logger.info(f"{metadata['pair']} 当前趋势是否做空 {trend_short_trigger.iloc[-1]}")
 
         # ========== 应用信号并严格标记策略类型 ==========
-        # 震荡网格做多
-        dataframe.loc[
-            grid_long_trigger &
-            (dataframe['volume'] > 0),
-            ['enter_long', 'enter_tag']
-        ] = (1, 'grid_long')
-        # # 趋势转多，做多，测试
+        # 趋势转多才做多（网格入场已停用，留作参考）
         # dataframe.loc[
-        #     trend_long_trigger &
+        #     grid_long_trigger &
         #     (dataframe['volume'] > 0),
         #     ['enter_long', 'enter_tag']
-        # ] = (1, 'trend_long')
+        # ] = (1, 'grid_long')
+        dataframe.loc[
+            trend_long_trigger &
+            (dataframe['volume'] > 0),
+            ['enter_long', 'enter_tag']
+        ] = (1, 'trend_long')
 
         return dataframe
 
@@ -258,26 +253,10 @@ class TrendGridTradingStrategySpot(IStrategy):
         if pd.isna(sma_current) or pd.isna(trend_1d_current):
             return None
 
-        # ========== 2. 趋势反转强制平仓（优先级最高） ==========
+        # ========== 2. 趋势反转强制平仓（唯一出口，不看盈亏） ==========
         if trend_1d_current < 0:
-            if current_profit >= self.max_loss_pct.value:
-                logger.info(f"{pair} {current_time} {current_profit:.2%} {self.max_loss_pct.value:.2%} 多头仓位，趋势转空，强制平仓")
-                return "trend_reversed_short"
-
-        # ========== 3. 保本平仓检查 ==========
-        if self.break_even_pct.value > 0 and trade.nr_of_successful_entries >= self.break_even_pct.value:
-            if current_profit >= self.break_even_roi.value:
-                logger.info(f"{pair} 盈利{current_profit:.2%}达标，触发保本平仓")
-                return "break_even_profit"
-
-        # ========== 3. 最低盈利检查 ==========
-        if current_profit < self.min_roi.value:
-            # logger.info(f"{pair} 盈利{current_profit:.2%}未达标")
-            return None
-        # ========== 4. DCA次数限制 ==========
-        if trade.nr_of_successful_entries >= 2:
-            logger.info(f"{pair} 补仓次数{trade.nr_of_successful_entries}次，盈利平仓")
-            return "max_dca_reached"
+            logger.info(f"{pair} {current_time} 趋势转空，强制平仓（{current_profit:.2%}）")
+            return "trend_reversed_short"
 
         return None
 

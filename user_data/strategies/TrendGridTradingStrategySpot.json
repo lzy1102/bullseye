@@ -1,14 +1,12 @@
 {
   "strategy_name": "TrendGridTradingStrategySpot",
   "params": {
-    "roi": {
-      "0": 0.1
-    },
+    "roi": {},
     "stoploss": {
-      "stoploss": -100
+      "stoploss": 0
     },
     "trailing": {
-      "trailing_stop": true,
+      "trailing_stop": false,
       "trailing_stop_positive": 0.02,
       "trailing_stop_positive_offset": 0.1,
       "trailing_only_offset_is_reached": true
