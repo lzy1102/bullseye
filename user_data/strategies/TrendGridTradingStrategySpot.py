@@ -13,7 +13,7 @@ from bullseye.strategy import (
     IStrategy,
     DecimalParameter,
     IntParameter,
-    merge_informative_pair,
+    informative,
 )
 from pandas import DataFrame
 from dateutil import parser
@@ -89,47 +89,33 @@ class TrendGridTradingStrategySpot(IStrategy):
             f"仓位{self.max_dca_count.value}"
         )
 
-    def _add_daily_trend(self, dataframe: DataFrame) -> DataFrame:
-        """Manual 1d informative: Bullseye does not execute @informative.
-
-        Resamples the base frame to daily, computes the same MA-alignment
-        trend, and merges it back (backward asof = no lookahead).
-        Produces trend_1d / ma_5d_1d / ma_10d_1d for downstream logic.
-        """
-        df = dataframe.sort_values("date")
-        daily = (
-            df.set_index("date")
-            .resample("1D")
-            .agg({"open": "first", "high": "max", "low": "min",
-                  "close": "last", "volume": "sum"})
-            .dropna(subset=["close"])
-        )
+    @informative('1d')
+    def populate_indicators_1d(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        # Engine executes this on the 1d frame and merges the result back
+        # lookahead-safe (columns land as trend_1d / ma_5d_1d / ...).
+        # ========== 1. 基础MA计算 ==========
         for period in [5, 10, 20, 30]:
-            daily[f"ma_{period}d"] = daily["close"].rolling(period).mean()
+            dataframe[f'ma_{period}d'] = ta.SMA(dataframe['close'], timeperiod=period)
+
         gap = float(self.min_gap_ratio.value)
+        # ========== 3. 多头排列 + 强度判断 ==========
         ma_aligned = (
-            (daily["ma_5d"] > daily["ma_10d"] * (1 + gap))
-            & (daily["ma_10d"] > daily["ma_20d"] * (1 + gap))
-            & (daily["ma_20d"] > daily["ma_30d"] * (1 + gap))
+            (dataframe['ma_5d'] > dataframe['ma_10d'] * (1 + gap))
+            & (dataframe['ma_10d'] > dataframe['ma_20d'] * (1 + gap))
+            & (dataframe['ma_20d'] > dataframe['ma_30d'] * (1 + gap))
         )
-        daily["trend"] = 0
-        daily.loc[ma_aligned, "trend"] = 1
+        dataframe['trend'] = 0
+        dataframe.loc[ma_aligned, 'trend'] = 1
+        # ========== 4. 空头排列 + 强度判断 ==========
         bear_aligned = (
-            (daily["ma_5d"] < daily["ma_10d"] * (1 - gap))
-            & (daily["ma_10d"] < daily["ma_20d"] * (1 - gap))
-            & (daily["ma_20d"] < daily["ma_30d"] * (1 - gap))
+            (dataframe['ma_5d'] < dataframe['ma_10d'] * (1 - gap))
+            & (dataframe['ma_10d'] < dataframe['ma_20d'] * (1 - gap))
+            & (dataframe['ma_20d'] < dataframe['ma_30d'] * (1 - gap))
         )
-        daily.loc[bear_aligned, "trend"] = -1
-        use = daily.reset_index()[["date", "trend", "ma_5d", "ma_10d"]].rename(
-            columns={"trend": "trend_1d", "ma_5d": "ma_5d_1d",
-                     "ma_10d": "ma_10d_1d"}
-        )
-        merged = pd.merge_asof(df, use, on="date", direction="backward")
-        merged[["trend_1d"]] = merged[["trend_1d"]].fillna(0)
-        return merged
+        dataframe.loc[bear_aligned, 'trend'] = -1
+        return dataframe
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        dataframe = self._add_daily_trend(dataframe)
         logger.info(
             f"{metadata['pair']} 1天时间框架，当前趋势 {dataframe['trend_1d'].iloc[-1]},ma_5d {dataframe['ma_5d_1d'].iloc[-1]}, ma_10d {dataframe['ma_10d_1d'].iloc[-1]}")
         # 计算 ADX 指标

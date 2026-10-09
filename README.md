@@ -167,11 +167,11 @@ class MyStrategy(IStrategy):
         return dataframe
 ```
 
-> **Note on `@informative`**: the decorator syntax is accepted (Freqtrade
-> strategies import cleanly), but multi-timeframe execution is not wired
-> yet — indicators from decorated methods are not computed or merged.
-> Compute higher-timeframe features manually via
-> `merge_informative_pair()` until multi-timeframe backtesting lands.
+> **Note on `@informative`**: multi-timeframe methods are executed and
+> merged lookahead-safe in both backtesting and live trading. Backtests
+> need the informative timeframe downloaded (e.g. `download-data
+> --timeframes 1h,1d`); missing informative data warns and skips that leg,
+> so guard optional columns with `if "col_1d" in dataframe.columns`.
 
 ### 2. Configure Your Market
 
