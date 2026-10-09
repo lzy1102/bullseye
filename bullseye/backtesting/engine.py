@@ -1179,33 +1179,10 @@ class BacktestEngine:
         current_date: datetime,
         order_type: str = "market",
     ):
-        """Minimal Freqtrade-compatible fill notice for order_filled().
+        """Minimal fill notice (delegates to order.stock_rules)."""
+        from bullseye.order.stock_rules import make_fill_order as _make
 
-        Backtest fills are immediate; this carries side/price/amount/cost
-        plus the commonly-read ft_* attributes. Documented subset —
-        strategies needing full Order books should run live.
-        """
-        import uuid
-        from types import SimpleNamespace
-
-        cost = (price or 0.0) * (amount or 0.0)
-        return SimpleNamespace(
-            order_id=str(uuid.uuid4())[:8],
-            pair=pair,
-            side=side,
-            ft_order_side=side,
-            order_type=order_type,
-            status="closed",
-            ft_is_open=False,
-            price=price,
-            average=price,
-            amount=amount,
-            filled=amount,
-            remaining=0.0,
-            cost=cost,
-            order_date=current_date,
-            order_filled_date=current_date,
-        )
+        return _make(pair, side, price, amount, current_date, order_type)
 
     def _fire_order_filled(self, strategy: IStrategy, pair: str,
                            trade: LocalTrade, order) -> None:
@@ -1223,21 +1200,11 @@ class BacktestEngine:
 
     @staticmethod
     def _detect_market_type(pair: str) -> "MarketType":
-        """Infer market type from pair format (backtest entries only).
+        """Infer market type from pair format (delegates to stock_rules)."""
+        from bullseye.order.stock_rules import detect_market_type as _detect
 
-        Previously all backtest trades were hardcoded to CRYPTO, mislabeling
-        stock/futures positions. Uses lightweight format detection matching
-        the settlement rules: 6-digit A-share codes -> STOCK, `@EXCH`
-        futures/option codes -> FUTURE, everything else -> CRYPTO.
-        """
-        import re
-
-        upper = (pair or "").upper()
-        if re.match(r"^\d{6}\.(SZ|SH|BJ)$", upper) or re.match(r"^[036]\d{5}$", upper):
-            return MarketType.STOCK
-        if re.match(r"^[A-Z]+\d+@[A-Z]+$", upper) or re.match(r"^\d+@[A-Z]+$", upper):
-            return MarketType.FUTURE
-        return MarketType.CRYPTO
+        mapping = {"stock": MarketType.STOCK, "future": MarketType.FUTURE}
+        return mapping.get(_detect(pair), MarketType.CRYPTO)
 
     # ==================== A-share trading rules ====================
 
@@ -1257,46 +1224,29 @@ class BacktestEngine:
 
     @staticmethod
     def _price_limit_ratio(pair: str) -> float:
-        """Daily price-limit ratio for an A-share code.
+        """Daily price-limit ratio (delegates to stock_rules)."""
+        from bullseye.order.stock_rules import price_limit_ratio as _ratio
 
-        Main board 10%; ChiNext (30xxxx) / STAR (688xxx) 20%. ST/*ST
-        (5%) cannot be identified from the code alone — override via
-        `backtest.price_limit_overrides: {"000001.SZ": 0.05}` when needed.
-        """
-        import re
-
-        upper = (pair or "").upper()
-        m = re.match(r"^(\d{6})(\.(SZ|SH|BJ))?$", upper)
-        if m and (m.group(1).startswith("30") or m.group(1).startswith("688")):
-            return 0.20
-        return 0.10
+        return _ratio(pair)
 
     def _limit_ratio_for(self, pair: str) -> float:
-        try:
-            overrides = self._config.get("backtest.price_limit_overrides", {}) or {}
-            if pair in overrides:
-                return float(overrides[pair])
-            upper = (pair or "").upper()
-            for key, value in overrides.items():
-                if str(key).upper() == upper:
-                    return float(value)
-        except Exception:
-            pass
-        return self._price_limit_ratio(pair)
+        from bullseye.order.stock_rules import limit_ratio_for as _for
+
+        return _for(self._config, pair)
 
     @staticmethod
     def _locked_at_limit_up(current_rate: float, prev_close: float, ratio: float) -> bool:
         """True when a buy fill at `current_rate` is unobtainable (limit-up)."""
-        if not prev_close or prev_close <= 0 or current_rate <= 0:
-            return False
-        return current_rate >= prev_close * (1 + ratio) * 0.999
+        from bullseye.order.stock_rules import locked_at_limit_up as _locked
+
+        return _locked(current_rate, prev_close, ratio)
 
     @staticmethod
     def _locked_at_limit_down(current_rate: float, prev_close: float, ratio: float) -> bool:
         """True when a sell fill at `current_rate` is unobtainable (limit-down)."""
-        if not prev_close or prev_close <= 0 or current_rate <= 0:
-            return False
-        return current_rate <= prev_close * (1 - ratio) * 1.001
+        from bullseye.order.stock_rules import locked_at_limit_down as _locked
+
+        return _locked(current_rate, prev_close, ratio)
 
     def _net_profit_ratio(self, trade: "LocalTrade", current_rate: float) -> float:
         """Net (fee-aware) profit ratio at a hypothetical exit price.
@@ -1427,16 +1377,16 @@ class BacktestEngine:
         # A-share lot rule: buys in multiples of 100 shares. Round down;
         # below one lot the order is rejected by the broker.
         if market_type == MarketType.STOCK and not is_short and self._enforce_lot_size():
-            import math
+            from bullseye.order.stock_rules import LOT_SIZE, floor_to_lots
 
-            lots = math.floor(amount / 100)
-            if lots < 1:
+            floored = floor_to_lots(amount)
+            if floored < LOT_SIZE:
                 logger.debug(
                     f"Entry skipped for {pair}: {amount:.2f} shares < 1 lot "
                     f"(stake={actual_stake})"
                 )
                 return None
-            amount = lots * 100
+            amount = floored
             actual_stake = amount * fill_rate
         fee = self._calc_fee(actual_stake, is_sell=is_short)
         trade = LocalTrade(
@@ -1706,13 +1656,13 @@ class BacktestEngine:
         if amount <= 0:
             return
         if trade.market_type == MarketType.STOCK and self._enforce_lot_size():
-            import math
+            from bullseye.order.stock_rules import LOT_SIZE, floor_to_lots
 
-            lots = math.floor(amount / 100)
-            if lots < 1:
+            floored = floor_to_lots(amount)
+            if floored < LOT_SIZE:
                 logger.debug(f"Adjust skipped for {trade.pair}: below 1 lot")
                 return
-            amount = lots * 100
+            amount = floored
             add = amount * fill
         fee = self._calc_fee(add, is_sell=False)
         # Reprice to volume-weighted average cost.

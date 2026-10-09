@@ -96,35 +96,82 @@ class OrderExecutor:
 
     # ==================== Position Sizing ====================
 
-    def calculate_stake_amount(self, pair: str) -> float:
+    def _resolve_leverage(
+        self,
+        pair: str,
+        current_rate: float,
+        current_time: datetime,
+        entry_tag: Optional[str],
+        side: str,
+    ) -> float:
+        """Resolve leverage via strategy.leverage() (default 1.0)."""
+        if not self._strategy:
+            return 1.0
+        try:
+            lev = self._strategy.leverage(
+                pair=pair,
+                current_time=current_time,
+                current_rate=current_rate,
+                proposed_leverage=1.0,
+                max_leverage=10,
+                entry_tag=entry_tag,
+                side=side,
+            )
+            lev_f = float(lev or 1.0)
+            if lev_f <= 0 or lev_f != lev_f:
+                return 1.0
+            return lev_f
+        except AttributeError:
+            return 1.0
+        except Exception as e:
+            logger.warning(f"Error resolving leverage: {e}")
+            return 1.0
+
+    def calculate_stake_amount(
+        self,
+        pair: str,
+        side: str = "long",
+        entry_tag: Optional[str] = None,
+        current_rate: float = 0.0,
+        current_time: Optional[datetime] = None,
+    ) -> float:
         """
         Calculate the stake amount for a new trade.
 
         Uses strategy's custom_stake_amount if available, otherwise
-        uses config settings.
+        uses config settings. Leverage is resolved first so custom
+        sizing sees the real value (previously hardcoded 1.0).
 
         Args:
             pair: Trading pair
+            side: "long" or "short"
+            entry_tag: Entry signal tag
+            current_rate: Current market price
+            current_time: Current time (default: now)
 
         Returns:
             Stake amount in stake currency
         """
         # Get base stake amount from wallet
         base_stake = self._wallets.get_trade_stake_amount(pair)
+        current_time = current_time or datetime.now()
 
         # Check for custom stake amount from strategy
         if self._strategy:
             try:
+                leverage = self._resolve_leverage(
+                    pair, current_rate, current_time, entry_tag, side
+                )
                 custom_stake = self._strategy.custom_stake_amount(
                     pair=pair,
-                    current_time=datetime.now(),
-                    current_rate=0.0,  # Will be updated before order
+                    current_time=current_time,
+                    current_rate=current_rate,
                     proposed_stake=base_stake,
                     min_stake=0.0,
                     max_stake=self._wallets.get_available_stake_amount(),
-                    leverage=1.0,
-                    entry_tag=None,
-                    side="long",
+                    leverage=leverage,
+                    entry_tag=entry_tag,
+                    side=side,
                 )
                 if custom_stake is not None:
                     base_stake = custom_stake
@@ -135,6 +182,23 @@ class OrderExecutor:
                 logger.warning(f"Error getting custom stake amount: {e}")
 
         return base_stake
+
+    def _fire_order_filled(self, pair: str, trade: LocalTrade, order) -> None:
+        """Invoke order_filled(); fills must never break execution."""
+        if not self._strategy:
+            return
+        try:
+            self._strategy.order_filled(
+                pair=pair,
+                trade=trade,
+                order=order,
+                current_time=getattr(order, "order_filled_date", None)
+                or datetime.now(),
+            )
+        except AttributeError:
+            pass
+        except Exception as e:
+            logger.warning(f"Error in order_filled: {e}")
 
     def calculate_amount(self, rate: float, stake_amount: float) -> float:
         """
@@ -163,6 +227,8 @@ class OrderExecutor:
         rate: float,
         enter_tag: Optional[str] = None,
         stake_amount: Optional[float] = None,
+        side: str = "long",
+        current_time: Optional[datetime] = None,
     ) -> Optional[LocalTrade]:
         """
         Execute an entry order (simulated in dry-run mode).
@@ -172,10 +238,20 @@ class OrderExecutor:
             rate: Entry price
             enter_tag: Entry signal tag
             stake_amount: Override stake amount (optional)
+            side: "long" or "short"
+            current_time: Current time (default: now)
 
         Returns:
             The created LocalTrade if successful, None otherwise
         """
+        from bullseye.order.stock_rules import (
+            LOT_SIZE,
+            detect_market_type,
+            floor_to_lots,
+        )
+
+        current_time = current_time or datetime.now()
+
         # Check if we can open a new trade
         if not self._pm.can_open_trade():
             logger.warning(f"Cannot open trade for {pair}: max_open_trades reached")
@@ -188,7 +264,10 @@ class OrderExecutor:
 
         # Calculate stake amount
         if stake_amount is None:
-            stake_amount = self.calculate_stake_amount(pair)
+            stake_amount = self.calculate_stake_amount(
+                pair, side=side, entry_tag=enter_tag,
+                current_rate=rate, current_time=current_time,
+            )
 
         if stake_amount <= 0:
             logger.warning(f"Invalid stake amount for {pair}: {stake_amount}")
@@ -207,12 +286,40 @@ class OrderExecutor:
             logger.warning(f"No available balance for {pair}")
             return None
 
+        # Custom entry price (e.g. limit offset), then size the amount.
+        if self._strategy:
+            try:
+                custom_rate = self._strategy.custom_entry_price(
+                    pair=pair,
+                    current_time=current_time,
+                    proposed_rate=rate,
+                    entry_tag=enter_tag,
+                    side=side,
+                )
+                if custom_rate is not None and float(custom_rate) > 0:
+                    rate = float(custom_rate)
+            except AttributeError:
+                pass
+            except Exception as e:
+                logger.warning(f"Error in custom_entry_price: {e}")
+
         # Calculate amount
         amount = self.calculate_amount(rate, stake_amount)
 
         if amount <= 0:
             logger.warning(f"Invalid amount for {pair}: {amount}")
             return None
+
+        # A-share lot rule (mirrors backtests).
+        if detect_market_type(pair) == "stock" and side != "short":
+            floored = floor_to_lots(amount)
+            if floored < LOT_SIZE:
+                logger.warning(
+                    f"Entry rejected for {pair}: {amount:.2f} shares < 1 lot"
+                )
+                return None
+            amount = floored
+            stake_amount = amount * rate
 
         # Confirm entry with strategy if available
         if self._strategy:
@@ -248,11 +355,22 @@ class OrderExecutor:
             stake_amount=stake_amount,
             enter_tag=enter_tag,
             market_type=self._market_type,
+            is_short=(side == "short"),
         )
 
         logger.info(
             f"Executed entry for {pair}: "
             f"rate={rate}, amount={amount}, stake={stake_amount}, tag={enter_tag}"
+        )
+
+        from bullseye.order.stock_rules import make_fill_order
+
+        self._fire_order_filled(
+            pair, trade,
+            make_fill_order(
+                pair, "buy" if side != "short" else "sell",
+                rate, amount, current_time,
+            ),
         )
 
         return trade
@@ -320,6 +438,17 @@ class OrderExecutor:
             exit_reason=exit_reason,
         )
 
+        if closed_trade is not None:
+            from bullseye.order.stock_rules import make_fill_order
+
+            self._fire_order_filled(
+                trade.pair, closed_trade,
+                make_fill_order(
+                    trade.pair, "sell" if not trade.is_short else "buy",
+                    rate, trade.amount, datetime.now(),
+                ),
+            )
+
         return closed_trade
 
     # ==================== Live Execution (gateway-routed) ====================
@@ -351,7 +480,7 @@ class OrderExecutor:
             logger.error(f"Live entry for {pair} rejected by gateway (no orderid)")
             return None
 
-        order = self._wait_for_fill(orderid)
+        order = self._wait_for_fill(orderid, trade=None, is_entry=True)
         if order is None:
             logger.error(
                 f"Live entry for {pair}: no order state from gateway "
@@ -392,6 +521,15 @@ class OrderExecutor:
             f"Live entry executed for {pair}: orderid={orderid}, "
             f"price={fill_price}, amount={fill_amount}, stake={fill_stake:.4f}"
         )
+
+        from bullseye.order.stock_rules import make_fill_order
+
+        self._fire_order_filled(
+            pair, trade,
+            make_fill_order(
+                pair, "buy", fill_price, fill_amount, datetime.now()
+            ),
+        )
         return trade
 
     def _execute_exit_live(
@@ -420,7 +558,7 @@ class OrderExecutor:
             logger.error(f"Live exit for {trade.pair} rejected by gateway (no orderid)")
             return None
 
-        order = self._wait_for_fill(orderid)
+        order = self._wait_for_fill(orderid, trade=trade, is_entry=False)
         if order is None:
             logger.error(
                 f"Live exit for {trade.pair}: no order state from gateway "
@@ -457,11 +595,102 @@ class OrderExecutor:
             f"Live exit executed for {trade.pair}: orderid={orderid}, "
             f"price={fill_price}, reason={exit_reason}"
         )
+
+        from bullseye.order.stock_rules import make_fill_order
+
+        self._fire_order_filled(
+            trade.pair, closed_trade,
+            make_fill_order(
+                trade.pair, "sell" if not trade.is_short else "buy",
+                fill_price, trade.amount, datetime.now(),
+            ),
+        )
         return closed_trade
 
-    def _wait_for_fill(self, orderid: str) -> Optional[OrderData]:
+    def execute_adjust(
+        self,
+        trade: LocalTrade,
+        rate: float,
+        current_time: Optional[datetime] = None,
+    ) -> Optional[float]:
+        """Evaluate and book a DCA add for a live open trade.
+
+        Calls strategy.adjust_trade_position() (gated by
+        position_adjustment_enable) and books a positive stake via
+        PositionManager.adjust_position(). Live gateway routing for adds
+        is not yet implemented: in live mode the add is booked locally
+        after logging a warning (dry-run semantics).
+
+        Returns the booked add stake, or None when no add happened.
+        """
+        if not self._strategy:
+            return None
+        if not getattr(self._strategy, "position_adjustment_enable", False):
+            return None
+        if trade.is_short:
+            return None
+
+        current_time = current_time or datetime.now()
+        available = self._wallets.get_available_stake_amount()
+        if available <= 0:
+            return None
+
+        try:
+            net = trade.calc_profit_ratio(rate)
+            add = self._strategy.adjust_trade_position(
+                trade=trade,
+                current_time=current_time,
+                current_rate=rate,
+                current_profit=net,
+                min_stake=0.0,
+                max_stake=available,
+                current_entry_rate=rate,
+                current_exit_rate=rate,
+                current_entry_profit=net,
+                current_exit_profit=net,
+                min_limit=0.0,
+                max_limit=available,
+            )
+        except AttributeError:
+            return None
+        except Exception as e:
+            logger.warning(f"Error in adjust_trade_position: {e}")
+            return None
+
+        if add is None:
+            return None
+        if isinstance(add, (tuple, list)) and len(add) == 2:
+            add = add[0]
+            if add is None:
+                return None
+        try:
+            add = float(add)
+        except (TypeError, ValueError):
+            return None
+        if add <= 0:
+            return None
+
+        if self.is_live:
+            logger.warning(
+                f"Live DCA for {trade.pair} is not gateway-routed yet; "
+                "booking locally with dry-run semantics"
+            )
+        if self._pm.adjust_position(trade, min(add, available), rate):
+            return min(add, available)
+        return None
+
+    def _wait_for_fill(
+        self,
+        orderid: str,
+        trade: Optional[LocalTrade] = None,
+        is_entry: bool = True,
+    ) -> Optional[OrderData]:
         """
         Poll gateway.query_order until terminal status or timeout.
+
+        On timeout the strategy's check_buy/check_sell_timeout decides:
+        True cancels and returns the last state, False extends the wait
+        by another window (Freqtrade semantics).
 
         Returns the last observed OrderData, or None if the gateway never
         reported any state.
@@ -484,13 +713,48 @@ class OrderExecutor:
                     return order
 
             if time.monotonic() >= deadline:
-                logger.warning(
-                    f"Order {orderid} not confirmed within {timeout}s "
-                    f"(last status: {last.status.value if last else 'unknown'})"
-                )
-                return last
+                if self._check_order_timeout(orderid, trade, is_entry, last):
+                    return last
+                deadline = time.monotonic() + timeout
 
             time.sleep(max(0.01, interval))
+
+    def _check_order_timeout(
+        self,
+        orderid: str,
+        trade: Optional[LocalTrade],
+        is_entry: bool,
+        last: Optional[OrderData],
+    ) -> bool:
+        """Ask the strategy whether a timed-out order should be cancelled.
+
+        Returns True to cancel (default when no callback), False to wait.
+        """
+        if self._strategy is not None and trade is not None:
+            try:
+                cb = (self._strategy.check_buy_timeout if is_entry
+                      else self._strategy.check_sell_timeout)
+                pair = trade.pair if trade else ""
+                keep_waiting = cb(
+                    pair=pair, trade=trade, order=last,
+                    current_time=datetime.now(),
+                )
+                # Freqtrade convention: True means "timed out, cancel it".
+                if keep_waiting is True:
+                    logger.info(f"Order {orderid} timed out (strategy confirmed)")
+                    return True
+                if keep_waiting is False:
+                    logger.info(f"Order {orderid} extended by strategy")
+                    return False
+            except AttributeError:
+                pass
+            except Exception as e:
+                logger.warning(f"Error in order timeout callback: {e}")
+        logger.warning(
+            f"Order {orderid} not confirmed within timeout "
+            f"(last status: {last.status.value if last else 'unknown'})"
+        )
+        return True
 
     def _safe_cancel(self, orderid: str) -> None:
         """Best-effort cancel used on timeout/partial fills."""

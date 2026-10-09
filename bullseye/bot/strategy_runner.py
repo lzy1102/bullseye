@@ -201,6 +201,12 @@ class StrategyRunner:
         """
         Add informative pair data to the dataframe.
 
+        Runs every @informative-declared method on its own timeframe/pair
+        and merges the result with the lookahead-safe date-shift merge
+        (previously: wrong marker attribute so methods never ran, matched
+        on a nonexistent key, and merged positionally across different
+        timeframe row counts).
+
         Args:
             dataframe: Main timeframe dataframe
             pair: Current trading pair
@@ -208,50 +214,46 @@ class StrategyRunner:
         Returns:
             DataFrame with informative data merged in
         """
+        from bullseye.strategy.interface import (
+            collect_informative_specs,
+            merge_informative_pair,
+            resolve_informative_pair,
+        )
+
         try:
-            # Get informative pairs from strategy
-            informative_pairs = self._strategy.informative_pairs()
-
-            for info_pair, info_timeframe in informative_pairs:
-                if info_pair is None:
+            base_timeframe = getattr(self._strategy, "timeframe", "")
+            stake_currency = self._config.stake_currency
+            for spec in collect_informative_specs(self._strategy):
+                inf_tf = spec["timeframe"]
+                if not inf_tf:
                     continue
-
-                # Fetch informative data
-                info_df = self._dp.historic_ohlcv(
-                    pair=info_pair,
-                    timeframe=info_timeframe,
+                inf_pair = resolve_informative_pair(
+                    pair, spec["asset"], stake_currency=stake_currency
                 )
-
-                if info_df.empty:
-                    continue
-
-                # Run strategy's informative indicator method if it exists
-                # (handled by @informative decorator in strategy)
-                metadata = {"pair": info_pair}
-
-                # Check for informative decorator methods
-                for attr_name in dir(self._strategy):
-                    attr = getattr(self._strategy, attr_name, None)
-                    if callable(attr) and hasattr(attr, "_informative"):
-                        info_config = attr._informative
-                        if info_config.get("pair") == info_pair or info_config.get("pair") is None:
-                            # Call the informative method
-                            try:
-                                info_df = attr(info_df, metadata)
-                            except Exception as e:
-                                logger.debug(f"Error in informative method: {e}")
-
-                # Merge informative data
-                # Use suffix based on timeframe
-                suffix = f"_{info_timeframe}"
-                for col in info_df.columns:
-                    if col not in ["date", "open", "high", "low", "close", "volume"]:
-                        if col + suffix not in dataframe.columns:
-                            # Simple merge - forward fill informative data
-                            dataframe[col + suffix] = info_df[col].reindex(
-                                dataframe.index, method="ffill"
+                try:
+                    if inf_pair == pair and inf_tf == base_timeframe:
+                        info_df = dataframe.copy()
+                    else:
+                        info_df = self._dp.historic_ohlcv(
+                            pair=inf_pair,
+                            timeframe=inf_tf,
+                        )
+                        if info_df.empty:
+                            logger.debug(
+                                f"No informative data for {inf_pair} {inf_tf}"
                             )
-
+                            continue
+                        info_df = info_df.copy()
+                    analyzed = spec["method"](info_df, {"pair": inf_pair})
+                    if analyzed is None or getattr(analyzed, "empty", False):
+                        continue
+                    dataframe = merge_informative_pair(
+                        dataframe, analyzed, base_timeframe, inf_tf
+                    )
+                except Exception as e:
+                    logger.debug(
+                        f"Error in informative {spec['method_name']}: {e}"
+                    )
         except Exception as e:
             logger.debug(f"Error adding informative pairs: {e}")
 
@@ -290,11 +292,18 @@ class StrategyRunner:
         enter_long = latest.get("enter_long", 0)
         enter_tag = latest.get("enter_tag", None)
 
+        # Previous close for limit-up guards (A-shares).
+        prev_close = (
+            float(dataframe["close"].iloc[-2])
+            if len(dataframe) >= 2 else current_rate
+        )
+
         if enter_long == 1:
             self._handle_entry_signal(
                 pair=pair,
                 direction="long",
                 rate=current_rate,
+                prev_close=prev_close,
                 enter_tag=enter_tag,
                 current_time=current_time,
             )
@@ -307,6 +316,7 @@ class StrategyRunner:
                     pair=pair,
                     direction="short",
                     rate=current_rate,
+                    prev_close=prev_close,
                     enter_tag=enter_tag,
                     current_time=current_time,
                 )
@@ -318,6 +328,7 @@ class StrategyRunner:
         rate: float,
         enter_tag: Optional[str],
         current_time: datetime,
+        prev_close: Optional[float] = None,
     ) -> None:
         """
         Handle an entry signal.
@@ -328,7 +339,26 @@ class StrategyRunner:
             rate: Entry price
             enter_tag: Entry signal tag
             current_time: Current time
+            prev_close: Previous close for limit-up guard (optional)
         """
+        from bullseye.order.stock_rules import (
+            detect_market_type,
+            limit_ratio_for,
+            locked_at_limit_up,
+        )
+
+        # A-share limit-up lock rejects buys (mirrors backtests).
+        if (
+            direction != "short"
+            and detect_market_type(pair) == "stock"
+            and prev_close
+            and locked_at_limit_up(
+                rate, prev_close, limit_ratio_for(self._config, pair)
+            )
+        ):
+            logger.debug(f"Entry skipped for {pair}: locked at limit-up")
+            return
+
         # Confirm entry with strategy
         try:
             confirmed = self._strategy.confirm_trade_entry(
@@ -350,11 +380,13 @@ class StrategyRunner:
             logger.warning(f"Error in confirm_trade_entry: {e}")
             # Continue with entry if confirm method not implemented
 
-        # Execute entry
+        # Execute entry (stake/leverage/entry-price resolved inside)
         trade = self._executor.execute_entry(
             pair=pair,
             rate=rate,
             enter_tag=enter_tag,
+            side=direction,
+            current_time=current_time,
         )
 
         if trade:
@@ -374,12 +406,14 @@ class StrategyRunner:
         """
         Check for exit signals and conditions.
 
-        Order of exit checks:
-        1. Stop loss
+        Order mirrors the backtest engine so live and paper agree:
+        0. Position adjustment (DCA)
+        0a. Limit-down block (A-shares)
+        1. Stop loss (incl. custom_stoploss)
         2. Trailing stop
-        3. ROI
+        3. ROI (incl. custom_roi, ignore_roi_if_entry_signal)
         4. Custom exit
-        5. Exit signal
+        5. Exit signal (use_exit_signal / exit_profit_only)
 
         Args:
             pair: Trading pair
@@ -387,6 +421,12 @@ class StrategyRunner:
             current_rate: Current price
             current_time: Current time
         """
+        from bullseye.order.stock_rules import (
+            detect_market_type,
+            limit_ratio_for,
+            locked_at_limit_down,
+        )
+
         # Get open trade for this pair
         trade = self._pm.get_trade_for_pair(pair)
         if not trade:
@@ -395,7 +435,34 @@ class StrategyRunner:
         # Update trade's rate tracking
         trade.update_rate(current_rate)
 
-        # 1. Check stop loss
+        prev_close = (
+            float(dataframe["close"].iloc[-2])
+            if len(dataframe) >= 2 else current_rate
+        )
+
+        # 0. Position adjustment (DCA adds are buys; T+1 does not block them)
+        try:
+            self._executor.execute_adjust(
+                trade=trade,
+                rate=current_rate,
+                current_time=current_time,
+            )
+        except Exception as e:
+            logger.warning(f"Error in position adjustment: {e}")
+
+        # 0a. Limit-down lock blocks all sells (mirrors backtests).
+        if (
+            not trade.is_short
+            and detect_market_type(pair) == "stock"
+            and locked_at_limit_down(
+                current_rate, prev_close,
+                limit_ratio_for(self._config, pair),
+            )
+        ):
+            logger.debug(f"Exit blocked for {pair}: locked at limit-down")
+            return
+
+        # 1. Check stop loss (incl. custom_stoploss via position manager)
         if self._pm.check_stoploss(trade, current_rate):
             self._handle_exit_signal(
                 trade=trade,
@@ -415,8 +482,16 @@ class StrategyRunner:
             )
             return
 
-        # 3. Check ROI
-        roi_reason = self._pm.check_roi(trade, current_rate, current_time)
+        # 3. Check ROI (custom_roi + entry-signal guard inside)
+        latest = dataframe.iloc[-1]
+        has_entry = bool(
+            latest.get("enter_long", 0) == 1
+            or latest.get("enter_short", 0) == 1
+        )
+        roi_reason = self._pm.check_roi(
+            trade, current_rate, current_time,
+            has_entry_signal=has_entry,
+        )
         if roi_reason:
             self._handle_exit_signal(
                 trade=trade,
@@ -433,6 +508,9 @@ class StrategyRunner:
             current_time=current_time,
         )
         if custom_reason:
+            if getattr(self._strategy, "exit_profit_only", False):
+                if trade.calc_profit_ratio(current_rate) <= 0:
+                    return
             self._handle_exit_signal(
                 trade=trade,
                 rate=current_rate,
@@ -442,11 +520,21 @@ class StrategyRunner:
             return
 
         # 5. Check exit signal from dataframe
-        latest = dataframe.iloc[-1]
+        if not getattr(self._strategy, "use_exit_signal", True):
+            return
         exit_long = latest.get("exit_long", 0)
+        exit_short = latest.get("exit_short", 0)
         exit_tag = latest.get("exit_tag", None)
 
-        if exit_long == 1:
+        should_exit = (
+            (trade.is_short and exit_short == 1)
+            or (not trade.is_short and exit_long == 1)
+        )
+        if should_exit and getattr(self._strategy, "exit_profit_only", False):
+            if trade.calc_profit_ratio(current_rate) <= 0:
+                return
+
+        if should_exit:
             # Confirm exit with strategy
             try:
                 confirmed = self._strategy.confirm_trade_exit(
@@ -490,6 +578,24 @@ class StrategyRunner:
             exit_reason: Reason for exit
             current_time: Current time
         """
+        # Custom exit price (e.g. limit offset) before execution.
+        if self._strategy is not None:
+            try:
+                custom_rate = self._strategy.custom_exit_price(
+                    pair=trade.pair,
+                    trade=trade,
+                    current_time=current_time,
+                    proposed_rate=rate,
+                    current_profit=trade.calc_profit_ratio(rate),
+                    exit_tag=exit_reason,
+                )
+                if custom_rate is not None and float(custom_rate) > 0:
+                    rate = float(custom_rate)
+            except AttributeError:
+                pass
+            except Exception as e:
+                logger.warning(f"Error in custom_exit_price: {e}")
+
         # Execute exit
         closed_trade = self._executor.execute_exit(
             trade=trade,

@@ -492,6 +492,15 @@ class BullseyeBot:
         if not self._strategy_runner or not self._strategy_runner.is_running():
             return
 
+        # Strategy per-cycle hook (previously never invoked).
+        try:
+            if self._strategy is not None:
+                self._strategy.bot_loop_start()
+        except AttributeError:
+            pass
+        except Exception as e:
+            logger.warning(f"Error in strategy bot_loop_start: {e}")
+
         # Process each pair in the pairlist
         for pair in self._pairlist:
             try:

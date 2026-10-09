@@ -669,6 +669,29 @@ class PositionManager:
         if stoploss == 0:
             return False
 
+        # Dynamic stoploss hook (mirrors the backtest engine): a valid
+        # -1..0 ratio reprices the stop level before the hit check.
+        if getattr(self._strategy, 'use_custom_stoploss', False):
+            try:
+                current_profit = trade.calc_profit_ratio(current_rate)
+                new_sl = self._strategy.custom_stoploss(
+                    pair=trade.pair,
+                    trade=trade,
+                    current_time=datetime.now(),
+                    current_rate=current_rate,
+                    current_profit=current_profit,
+                )
+                if new_sl is not None:
+                    ratio = float(new_sl)
+                    if ratio == ratio and -1 <= ratio <= 0:
+                        trade.stop_loss_pct = ratio
+                        trade.stop_loss = trade.open_rate * (
+                            (1 - ratio) if trade.is_short else (1 + ratio)
+                        )
+                        trade.is_stop_loss_trailing = True
+            except Exception as e:
+                logger.warning(f"Error in custom_stoploss: {e}")
+
         # Update trade's max/min rate tracking
         trade.update_rate(current_rate)
 
@@ -723,6 +746,7 @@ class PositionManager:
         trade: LocalTrade,
         current_rate: float,
         current_time: Optional[datetime] = None,
+        has_entry_signal: bool = False,
     ) -> Optional[str]:
         """
         Check if ROI target has been reached.
@@ -731,6 +755,8 @@ class PositionManager:
             trade: Trade to check
             current_rate: Current market price
             current_time: Current time (default: now)
+            has_entry_signal: Fresh entry signal present (honors
+                ignore_roi_if_entry_signal, mirroring backtests)
 
         Returns:
             Exit reason string if ROI triggered, None otherwise
@@ -739,7 +765,29 @@ class PositionManager:
             return None
 
         minimal_roi = getattr(self._strategy, 'minimal_roi', {})
+
+        # Dynamic ROI override (mirrors the backtest engine).
+        if self._strategy:
+            try:
+                custom_target = self._strategy.custom_roi(
+                    pair=trade.pair,
+                    current_time=current_time or datetime.now(),
+                    current_rate=current_rate,
+                    current_profit=trade.calc_profit_ratio(current_rate),
+                )
+                if custom_target is not None:
+                    minimal_roi = {"0": float(custom_target)}
+            except AttributeError:
+                pass
+            except Exception as e:
+                logger.warning(f"Error in custom_roi: {e}")
+
         if not minimal_roi:
+            return None
+
+        if has_entry_signal and getattr(
+            self._strategy, 'ignore_roi_if_entry_signal', False
+        ):
             return None
 
         current_time = current_time or datetime.now()
@@ -766,6 +814,73 @@ class PositionManager:
                     return f"roi_{minutes}m"
 
         return None
+
+    def adjust_position(
+        self,
+        trade: LocalTrade,
+        add_stake: float,
+        fill_rate: float,
+    ) -> bool:
+        """Average down an open position (live DCA, mirrors backtests).
+
+        Reprices open_rate to the volume-weighted average cost, accumulates
+        fees and the entry count, and deducts the stake from the wallet.
+        Stock buys are floored to whole lots; sub-lot adds are rejected.
+
+        Returns True when the add was booked, False otherwise.
+        """
+        from bullseye.order.stock_rules import LOT_SIZE, floor_to_lots
+
+        if trade.is_short or add_stake <= 0 or fill_rate <= 0:
+            return False
+
+        with self._lock:
+            if trade.pair not in self._trades:
+                return False
+
+            amount = add_stake / fill_rate
+            if trade.market_type == MarketType.STOCK:
+                try:
+                    enforce = bool(
+                        self._config.get("backtest.enforce_lot_size", True)
+                    )
+                except Exception:
+                    enforce = True
+                if enforce:
+                    floored = floor_to_lots(amount)
+                    if floored < LOT_SIZE:
+                        logger.debug(
+                            f"Adjust skipped for {trade.pair}: below 1 lot"
+                        )
+                        return False
+                    amount = floored
+                    add_stake = amount * fill_rate
+
+            # Deduct first so a shortfall never leaves a half-booked trade.
+            if not self._wallets.deduct_amount(
+                self._config.stake_currency, add_stake
+            ):
+                logger.warning(
+                    f"Insufficient balance for adjust on {trade.pair}"
+                )
+                return False
+
+            fee = self._calc_fee(add_stake, is_sell=False)
+            total_cost = trade.open_rate * trade.amount + fill_rate * amount
+            trade.amount += amount
+            trade.open_rate = (
+                total_cost / trade.amount if trade.amount > 0 else fill_rate
+            )
+            trade.stake_amount += add_stake
+            trade.fee_open += fee
+            trade.nr_of_successful_entries += 1
+            trade.update_rate(fill_rate)
+
+        logger.info(
+            f"Adjusted position for {trade.pair}: +{amount:.0f} @ {fill_rate}, "
+            f"avg={trade.open_rate:.4f}"
+        )
+        return True
 
     # ==================== T+1 Helpers ====================
 

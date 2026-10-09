@@ -161,12 +161,14 @@ class TestLiveExit:
         """T+1 gate must reject the exit before any order reaches the gateway."""
         executor, pm, _ = make_executor()
 
-        entry_gw = ScriptedGateway([make_order(Status.ALLTRADED, traded=1.0, price=10.0)])
+        entry_gw = ScriptedGateway([make_order(Status.ALLTRADED, traded=1000.0, price=10.0)])
         executor.set_gateway(entry_gw)
-        trade = executor.execute_entry("600000.SH", rate=10.0)
+        # 10000 stake @ 10 = 1000 shares = 10 lots (lot rule enforced).
+        trade = executor.execute_entry("600000.SH", rate=10.0,
+                                       stake_amount=10000.0)
         assert trade is not None  # stock pair auto-detects T+1 restriction
 
-        exit_gw = ScriptedGateway([make_order(Status.ALLTRADED, traded=1.0, price=10.5)])
+        exit_gw = ScriptedGateway([make_order(Status.ALLTRADED, traded=1000.0, price=10.5)])
         executor.set_gateway(exit_gw)
 
         assert executor.execute_exit(trade, rate=10.5, exit_reason="roi") is None

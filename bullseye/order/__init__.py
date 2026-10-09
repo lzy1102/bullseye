@@ -40,6 +40,16 @@ from .settlement import (
     get_settlement_date,
     init_settlement_detector,
 )
+from .stock_rules import (
+    LOT_SIZE,
+    detect_market_type,
+    floor_to_lots,
+    limit_ratio_for,
+    locked_at_limit_down,
+    locked_at_limit_up,
+    make_fill_order,
+    price_limit_ratio,
+)
 
 __all__ = [
     # Core classes
@@ -57,4 +67,13 @@ __all__ = [
     "is_t1_market",
     "get_settlement_date",
     "init_settlement_detector",
+    # Shared stock microstructure rules (backtest + live)
+    "LOT_SIZE",
+    "detect_market_type",
+    "floor_to_lots",
+    "limit_ratio_for",
+    "locked_at_limit_down",
+    "locked_at_limit_up",
+    "make_fill_order",
+    "price_limit_ratio",
 ]
