@@ -2,8 +2,8 @@
 GridBank10 - A-share grid averaging-down strategy.
 
 Rules (per pair):
-- Capital is split into 10 equal tranches; tranche 1 opens on the first
-  signal candle, tranches 2-10 are added by adjust_trade_position().
+- Capital is split into 5 equal tranches; tranche 1 opens on the first
+  signal candle, tranches 2-5 are added by adjust_trade_position().
 - Add one tranche each time the price falls 5% below the last buy price.
 - Never close at a loss: exits only via custom_exit once net profit
   reaches the take-profit target (default +5%).
@@ -32,7 +32,7 @@ class GridBank10(IStrategy):
 
     position_adjustment_enable = True
 
-    max_tranches: int = 10
+    max_tranches: int = 5
     dip_step: float = 0.05
     take_profit: float = 0.05
     tranche_stake: float = 12000.0
