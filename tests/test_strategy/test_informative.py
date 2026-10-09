@@ -66,6 +66,23 @@ class TestMergeInformativePair:
         merged = merge_informative_pair(df, tf, "5m", "1h", drop_informative=True)
         assert "close_1h" not in merged.columns
 
+    def test_sessioned_market_without_midnight_rows(self):
+        """A-share 30m rows never hit midnight date_merge keys; the merge
+        must still attach the latest closed daily candle (backward asof),
+        not all-NaN like exact matching produces."""
+        base = pd.DataFrame({
+            "date": pd.to_datetime(["2024-01-02 09:30", "2024-01-02 10:00",
+                                    "2024-01-03 09:30"]),
+            "close": [1.0, 2.0, 3.0],
+        })
+        inf = pd.DataFrame({
+            "date": pd.to_datetime(["2024-01-01", "2024-01-02"]),
+            "close": [10.0, 20.0], "open": 1.0, "high": 1.0,
+            "low": 1.0, "volume": 1.0,
+        })
+        merged = merge_informative_pair(base, inf, "30m", "1d")
+        assert merged["close_1d"].tolist() == [10.0, 10.0, 20.0]
+
 
 class TestInformativeDecorator:
     def test_decorator_tags_function(self):

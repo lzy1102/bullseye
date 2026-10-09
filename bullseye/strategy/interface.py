@@ -509,17 +509,27 @@ def merge_informative_pair(
     inf_tf = informative_timeframe
     informative.columns = [f"{col}_{inf_tf}" for col in informative.columns]
 
-    # Merge
-    dataframe = pd.merge(
-        dataframe,
-        informative,
-        left_on='date',
-        right_on=f'date_merge_{inf_tf}',
-        how='left'
-    )
-
+    # Merge. merge_asof (backward) is required — not exact matching:
+    # markets with trading sessions (e.g. A-shares, no midnight rows)
+    # would otherwise never hit a date_merge key and merge all-NaN.
+    # A base row sees the latest informative candle closed at or before it.
+    merge_key = f'date_merge_{inf_tf}'
     if ffill:
-        dataframe = dataframe.ffill()
+        dataframe = pd.merge_asof(
+            dataframe.sort_values("date"),
+            informative.sort_values(merge_key),
+            left_on="date",
+            right_on=merge_key,
+            direction="backward",
+        )
+    else:
+        dataframe = pd.merge(
+            dataframe,
+            informative,
+            left_on='date',
+            right_on=merge_key,
+            how='left'
+        )
 
     if drop_informative:
         cols_to_drop = [col for col in dataframe.columns if f'_{inf_tf}' in col]
