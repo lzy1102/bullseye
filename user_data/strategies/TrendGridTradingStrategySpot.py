@@ -28,11 +28,11 @@ class TrendGridTradingStrategySpot(IStrategy):
 
     # ROI/trailing taken from the tuned TrendGridTradingStrategySpot.json,
     # then raised to the 10% target: only +10% exits (any duration).
-    # Pure trend switch: entries on 0->1 flips, exits on -1 reversal.
-    # ROI / trailing / stoploss all off — nothing else may exit.
+    # Trend-only (grid leg removed): entries on 0->1 flips, exits on
+    # -1 reversal. ROI / trailing off; stoploss kept as a safety net.
     minimal_roi: dict = {}
 
-    stoploss: float = 0
+    stoploss: float = -0.08
     trailing_stop = False
     # process_only_new_candles = True
     trailing_stop_positive = 0.02
@@ -163,21 +163,6 @@ class TrendGridTradingStrategySpot(IStrategy):
         trend_1d = (dataframe['trend_1d'] if 'trend_1d' in dataframe
                     else pd.Series(0, index=dataframe.index))
         prev_trend = trend_1d.shift(1)
-        # ATR-scaled grid rungs: rung i sits i * mult ATRs below the SMA.
-        # atr/close guards div-zero; NaN ATR (warmup) disables the grid.
-        atr_pct = (dataframe['atr'] / close.replace(0, np.nan)).fillna(1.0)
-        mult = float(self.grid_atr_mult.value)
-        # ========== 多头入场信号 ==========
-        # 1. 震荡网格入场：trend_1d==0 且价格跌破任意支撑层
-        grid_long_trigger = (
-                (trend_1d >= 0) &  # 震荡或者多头，做网格多
-                pd.concat([
-                    close <= sma * (1 - i * mult * atr_pct)
-                    for i in range(1, int(self.grid_levels.value) + 1)
-                ], axis=1).any(axis=1)
-        )
-        logger.info(f"{metadata['pair']} 当前网格是否做多 {grid_long_trigger.iloc[-1]}")
-
         trend_long_trigger = (
                 (trend_1d == 1) &  # 多头趋势
                 (prev_trend == 0) &  # 上一个周期是震荡
@@ -191,13 +176,7 @@ class TrendGridTradingStrategySpot(IStrategy):
         )
         logger.info(f"{metadata['pair']} 当前趋势是否做空 {trend_short_trigger.iloc[-1]}")
 
-        # ========== 应用信号并严格标记策略类型 ==========
-        # 趋势转多才做多（网格入场已停用，留作参考）
-        # dataframe.loc[
-        #     grid_long_trigger &
-        #     (dataframe['volume'] > 0),
-        #     ['enter_long', 'enter_tag']
-        # ] = (1, 'grid_long')
+        # ========== 应用信号：只做趋势转多（网格入场已移除） ==========
         dataframe.loc[
             trend_long_trigger &
             (dataframe['volume'] > 0),
