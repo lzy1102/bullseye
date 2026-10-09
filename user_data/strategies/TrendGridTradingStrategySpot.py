@@ -26,16 +26,10 @@ logger = logging.getLogger(__name__)
 class TrendGridTradingStrategySpot(IStrategy):
     # 定义策略的参数
 
-    # ROI/trailing taken from the tuned TrendGridTradingStrategySpot.json
+    # ROI/trailing taken from the tuned TrendGridTradingStrategySpot.json,
+    # then raised to the 10% target: only +10% exits (any duration).
     minimal_roi = {
-        "0": 0.2,
-        "60": 0.1,
-        "150": 0.07,
-        "180": 0.06,
-        "210": 0.05,
-        "240": 0.04,
-        "270": 0.03,
-        "300": 0.02,
+        "0": 0.10,
     }
 
     # NOTE: json carries stoploss -100 (freqtrade "effectively off").
@@ -43,9 +37,11 @@ class TrendGridTradingStrategySpot(IStrategy):
     stoploss = -0.2
     trailing_stop = True
     # process_only_new_candles = True
-    trailing_stop_positive = 0.003
-    trailing_stop_positive_offset = 0.01
-    trailing_only_offset_is_reached = True  # 只有达到 positive 才开始跟踪
+    # 10% 才启动跟踪，启动后允许从最高点回吐 2%（落袋约 8%+）。
+    # 回吐设太小会被噪音洗出；要锁死 10% 把 positive 改 0.005。
+    trailing_stop_positive = 0.02
+    trailing_stop_positive_offset = 0.10
+    trailing_only_offset_is_reached = True  # 只有达到 offset 才开始跟踪
     # use_custom_stoploss = True
     timeframe = '30m'
 
