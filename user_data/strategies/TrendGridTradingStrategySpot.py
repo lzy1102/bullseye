@@ -54,7 +54,7 @@ class TrendGridTradingStrategySpot(IStrategy):
 
     # Defaults aligned with the tuned TrendGridTradingStrategySpot.json
     sma_timeperiod = IntParameter(5, 20, default=9, space="buy", optimize=True)
-    max_dca_count = IntParameter(5, 20, default=7, space="buy", optimize=True)  # Maximum number of DCA attempts
+    max_dca_count = IntParameter(1, 10, default=3, space="buy", optimize=True)  # Maximum number of DCA attempts
     grid_levels = IntParameter(5, 20, default=5, space="buy", optimize=True)
     grid_long_size = DecimalParameter(0.01, 0.09, default=0.02, space="buy", optimize=True)
     adjust_profit = DecimalParameter(0.01, 0.10, default=0.02, space="buy", optimize=True)
