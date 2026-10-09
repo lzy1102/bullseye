@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from bullseye.optimize.hyperopt import (
     HyperoptEngine,
+    HyperoptError,
     HyperoptLoss,
     SharpeHyperoptLoss,
     WinRatioHyperoptLoss,
@@ -16,6 +17,8 @@ from bullseye.optimize.hyperopt import (
     _get_optimizable_params,
     _sample_params,
     _apply_params,
+    apply_params_file,
+    load_params_file,
 )
 from bullseye.strategy.interface import (
     IStrategy,
@@ -386,3 +389,94 @@ class TestHyperoptEngine:
                 optimizer="optuna")
         assert len(eng.results) == 4
         assert eng.best_params
+
+
+class TestParamsFile:
+    """Freqtrade hyperopt params JSON as search centers."""
+
+    def _write_params(self, tmp_path, payload=None):
+        import json
+
+        path = tmp_path / "params.json"
+        path.write_text(json.dumps(payload if payload is not None else {
+            "strategy_name": "OptimizableStrategy",
+            "params": {
+                "roi": {"0": 0.1, "60": 0.05},
+                "stoploss": {"stoploss": -0.08},
+                "trailing": {"trailing_stop": True,
+                             "trailing_stop_positive": 0.02},
+                "buy": {"buy_rsi": 20, "trend_type": "down",
+                        "no_such_param": 1},
+                "sell": {"sell_rsi": 80},
+            },
+        }), encoding="utf-8")
+        return str(path)
+
+    def test_load_and_apply(self, tmp_path):
+        path = self._write_params(tmp_path)
+        params = load_params_file(path)
+        assert params["buy"]["buy_rsi"] == 20
+
+        class S(OptimizableStrategy):
+            pass
+
+        counts = apply_params_file(S, params)
+        assert counts["applied"] >= 5  # buy/sell/roi/stoploss/trailing
+        assert counts["skipped"] == 1  # no_such_param
+        assert S.buy_rsi.default == 20
+        assert S().buy_rsi == 20  # fresh instances observe it
+        assert S.minimal_roi == {"0": 0.1, "60": 0.05}
+        assert S.stoploss == -0.08
+        assert S.trailing_stop_positive == 0.02
+
+    def test_missing_file_raises(self, tmp_path):
+        import pytest
+
+        with pytest.raises(HyperoptError):
+            load_params_file(str(tmp_path / "nope.json"))
+
+    def test_bad_schema_raises(self, tmp_path):
+        import pytest
+
+        with pytest.raises(HyperoptError):
+            load_params_file(self._write_params(tmp_path, {"no": "params"}))
+
+    def test_run_with_params_file(self, tmp_path):
+        import pandas as pd
+        from datetime import datetime
+        from bullseye.configuration.config import Config
+
+        dates = pd.date_range(start=datetime(2024, 1, 1), periods=120,
+                              freq="1h")
+        prices = [90 + (i % 30) for i in range(120)]
+        data = {"BTC/USDT": pd.DataFrame({
+            "date": dates, "open": prices,
+            "high": [p + 0.5 for p in prices],
+            "low": [p - 0.5 for p in prices],
+            "close": prices, "volume": [1000.0] * 120,
+        })}
+
+        class ThresholdStrategy(OptimizableStrategy):
+            def populate_entry_trend(self, dataframe, metadata):
+                dataframe["enter_long"] = (
+                    dataframe["close"] > self.buy_rsi
+                ).astype(int)
+                return dataframe
+
+        cfg = Config()
+        cfg.set("dry_run_wallet", 10000)
+        cfg.set("stake_amount", 100)
+        cfg.set("max_open_trades", 1)
+        eng = HyperoptEngine(cfg)
+        eng.run(strategy_class=ThresholdStrategy, pairlist=["BTC/USDT"],
+                timeframe="1h", epochs=4, min_trades=1,
+                initial_balance=10000, data=data, random_state=7,
+                params_file=self._write_params(tmp_path),
+                export=str(tmp_path / "h.json"))
+        assert len(eng.results) == 4
+        assert eng.best_params
+
+        import json
+
+        saved = json.loads((tmp_path / "h.json").read_text())
+        assert saved["params_file"].endswith("params.json")

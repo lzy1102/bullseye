@@ -268,6 +268,121 @@ def _get_optimizable_params(
     return params
 
 
+def load_params_file(path: str) -> Dict[str, Any]:
+    """Load a Freqtrade hyperopt params file (ft_stratparam_v).
+
+    Returns the `params` mapping (roi/stoploss/trailing/buy/sell/
+    protection). Raises HyperoptError on missing file or bad schema.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    filepath = _Path(path)
+    if not filepath.exists():
+        raise HyperoptError(f"Params file not found: {path}")
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            payload = _json.load(f)
+    except Exception as e:
+        raise HyperoptError(f"Cannot parse params file {path}: {e}")
+    params = (payload or {}).get("params")
+    if not isinstance(params, dict):
+        raise HyperoptError(
+            f"Params file {path} has no 'params' mapping "
+            "(expected Freqtrade ft_stratparam format)"
+        )
+    return params
+
+
+def apply_params_file(
+    strategy_class: Type[IStrategy], params_data: Dict[str, Any]
+) -> Dict[str, int]:
+    """Apply a params-file mapping onto strategy defaults.
+
+    buy/sell entries override matching hyperoptable Parameter defaults
+    (type-coerced, unknown names warn and skip); roi/stoploss/trailing
+    sections override the plain strategy attributes. Returns counts of
+    {applied, skipped} per section. Fresh strategy instances observe the
+    new defaults, so call this before sampling.
+    """
+    counts = {"applied": 0, "skipped": 0}
+
+    def _coerce(descriptor: Any, value: Any) -> Any:
+        if isinstance(descriptor, BooleanParameter):
+            return bool(value)
+        if isinstance(descriptor, IntParameter):
+            return max(int(descriptor.low), min(int(descriptor.high),
+                                                int(float(value))))
+        if isinstance(descriptor, DecimalParameter):
+            decimals = max(0, int(getattr(descriptor, "decimals", 3)))
+            return round(float(value), decimals)
+        if isinstance(descriptor, CategoricalParameter):
+            choices = list(getattr(descriptor, "choices", []) or [])
+            if value in choices:
+                return value
+            logger.warning(
+                f"Ignoring params-file value {value!r}: not in {choices}"
+            )
+            return None
+        return value
+
+    for space in ("buy", "sell"):
+        for name, value in (params_data.get(space, {}) or {}).items():
+            descriptor = getattr(strategy_class, name, None)
+            if not isinstance(descriptor, (BooleanParameter, IntParameter,
+                                           DecimalParameter,
+                                           CategoricalParameter)):
+                logger.warning(
+                    f"Ignoring params-file entry '{space}.{name}': "
+                    "no such hyperoptable parameter"
+                )
+                counts["skipped"] += 1
+                continue
+            try:
+                coerced = _coerce(descriptor, value)
+            except (TypeError, ValueError) as e:
+                logger.warning(
+                    f"Ignoring params-file entry '{space}.{name}={value}': {e}"
+                )
+                counts["skipped"] += 1
+                continue
+            if coerced is None:
+                counts["skipped"] += 1
+                continue
+            descriptor.default = coerced
+            counts["applied"] += 1
+
+    roi = params_data.get("roi")
+    if isinstance(roi, dict) and roi:
+        try:
+            strategy_class.minimal_roi = {str(k): float(v) for k, v in roi.items()}
+            counts["applied"] += 1
+        except (TypeError, ValueError) as e:
+            logger.warning(f"Ignoring params-file roi section: {e}")
+            counts["skipped"] += 1
+
+    stoploss = (params_data.get("stoploss", {}) or {}).get("stoploss")
+    if stoploss is not None:
+        try:
+            strategy_class.stoploss = float(stoploss)
+            counts["applied"] += 1
+        except (TypeError, ValueError):
+            counts["skipped"] += 1
+
+    trailing = params_data.get("trailing", {}) or {}
+    for attr in ("trailing_stop", "trailing_stop_positive",
+                 "trailing_stop_positive_offset",
+                 "trailing_only_offset_is_reached"):
+        if attr in trailing:
+            try:
+                setattr(strategy_class, attr, trailing[attr])
+                counts["applied"] += 1
+            except Exception:
+                counts["skipped"] += 1
+
+    return counts
+
+
 def _sample_params(
     params: Dict[str, Any], rng: Any = None
 ) -> Dict[str, Any]:
@@ -425,6 +540,7 @@ class HyperoptEngine:
         self._validation_metrics: Dict[str, Any] = {}
         self._validation_loss: Optional[float] = None
         self._walk_forward: Dict[str, Any] = {}
+        self._params_file: Optional[str] = None
 
     def run(
         self,
@@ -451,6 +567,7 @@ class HyperoptEngine:
         validation_data: Optional[Dict[str, Any]] = None,
         walk_forward: int = 0,
         wf_min_train_candles: int = 50,
+        params_file: Optional[str] = None,
     ) -> "HyperoptEngine":
         """
         Run hyperparameter optimization.
@@ -490,6 +607,10 @@ class HyperoptEngine:
                 on the next unseen segment. `epochs` applies per fold.
             wf_min_train_candles: Minimum train candles per fold (folds with
                 less are skipped)
+            params_file: Freqtrade hyperopt params JSON (ft_stratparam_v).
+                buy/sell values become the Parameter defaults and
+                roi/stoploss/trailing sections override the strategy before
+                sampling, so a previous tuning is the search center.
 
         Returns:
             Self (for chaining)
@@ -541,6 +662,16 @@ class HyperoptEngine:
         if loss_cls is HyperoptLoss and alias.get(norm, norm) not in LOSS_FUNCTIONS:
             logger.warning(f"Unknown loss function '{loss_function}', using default")
         loss_fn = loss_cls.calculate
+
+        # Params file: previous tuning becomes the default center.
+        self._params_file = params_file
+        if params_file:
+            file_params = load_params_file(params_file)
+            counts = apply_params_file(strategy_class, file_params)
+            logger.info(
+                f"Params file {params_file}: applied "
+                f"{counts['applied']}, skipped {counts['skipped']}"
+            )
 
         # Get optimizable parameters (honors spaces filter)
         params = _get_optimizable_params(strategy_class, spaces=spaces)
@@ -1244,6 +1375,7 @@ class HyperoptEngine:
             "timerange": getattr(self, "_timerange", None),
             "validation_timerange": getattr(self, "_validation_timerange", None),
             "random_state": getattr(self, "_random_state", None),
+            "params_file": getattr(self, "_params_file", None),
             "best_params": self._best_params,
             "best_loss": best_loss_json,
             "best_metrics": self._best_metrics,
