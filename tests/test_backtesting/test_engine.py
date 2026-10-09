@@ -1039,6 +1039,86 @@ class TestGridAdjust:
         assert trades[0].amount == pytest.approx(200.0)
 
 
+class TestCustomStoploss:
+    """use_custom_stoploss reprices the stop level every candle."""
+
+    def test_custom_stop_triggers(self):
+        # Drift down 0.2%/candle: static -50% never hits, custom -0.5%
+        # trails the (falling) entry... use fixed custom level instead.
+        dates = pd.date_range("2024-01-01", periods=40, freq="1h")
+        prices = [100.0 - i * 0.2 for i in range(40)]
+        data = {"BTC/USDT": pd.DataFrame({
+            "date": dates, "open": prices, "high": prices,
+            "low": prices, "close": prices, "volume": [1000.0] * 40,
+        })}
+
+        class FixedCustom(FlatTestStrategy):
+            stoploss = -0.50
+            use_custom_stoploss = True
+
+            def custom_stoploss(self, pair, trade, current_time,
+                                current_rate, current_profit, **kwargs):
+                return -0.01  # 1% below average entry, always
+
+        trades = run_flat_backtest(FixedCustom, data)
+        assert len(trades) >= 1
+        assert trades[0].exit_reason == "stoploss"
+        # Static -50% on the same slope never triggers before force_exit.
+        class StaticWide(FlatTestStrategy):
+            stoploss = -0.50
+
+        wide = run_flat_backtest(StaticWide, data)
+        assert wide[0].exit_reason == "force_exit"
+
+    def test_invalid_return_ignored(self):
+        data = make_flat_data({"BTC/USDT": 30})
+
+        class BadReturn(FlatTestStrategy):
+            stoploss = -1.0
+            minimal_roi = {}
+            use_custom_stoploss = True
+
+            def custom_stoploss(self, pair, trade, current_time,
+                                current_rate, current_profit, **kwargs):
+                return "nonsense"
+
+        trades = run_flat_backtest(BadReturn, data)
+        assert len(trades) == 1  # no crash, normal close
+
+
+class TestOrderFilled:
+    """order_filled fires on entry and exit fills with fill details."""
+
+    def test_entry_and_exit_fills(self):
+        data = make_flat_data({"BTC/USDT": 30})
+        seen = []
+
+        class Recording(ImmediateExitStrategy):
+            def order_filled(self, pair, trade, order, current_time,
+                             **kwargs):
+                seen.append((pair, order.ft_order_side, order.price,
+                             order.amount))
+
+        run_flat_backtest(Recording, data)
+        sides = [s for _, s, _, _ in seen]
+        assert "buy" in sides and "sell" in sides
+        # Every entry fill is followed by an exit fill.
+        assert len(seen) % 2 == 0
+        for _, _, price, amount in seen:
+            assert price > 0 and amount > 0
+
+    def test_crashing_callback_does_not_break_run(self):
+        data = make_flat_data({"BTC/USDT": 30})
+
+        class Boom(FlatTestStrategy):
+            def order_filled(self, pair, trade, order, current_time,
+                             **kwargs):
+                raise RuntimeError("boom")
+
+        trades = run_flat_backtest(Boom, data)
+        assert len(trades) == 1
+
+
 class TestStockDownloadHelpers:
     """KlineData -> OHLCV conversion and stock download wiring."""
 

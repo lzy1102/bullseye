@@ -292,10 +292,29 @@ class IStrategy:
     ) -> float:
         """
         Custom exit price
-        
+
         Override to modify the exit price before placing the exit order.
         """
         return proposed_rate
+
+    use_custom_stoploss: bool = False
+
+    def custom_stoploss(
+        self,
+        pair: str,
+        trade: 'Trade',
+        current_time: datetime,
+        current_rate: float,
+        current_profit: float,
+        after_fill: bool = False,
+        **kwargs
+    ) -> Optional[float]:
+        """
+        Dynamic stop loss, evaluated every candle when use_custom_stoploss
+        is True. Return a stoploss ratio (e.g. -0.05 for 5% below entry for
+        longs) or None to keep the current stop level.
+        """
+        return None
 
     def adjust_entry_price(
         self,
@@ -509,6 +528,62 @@ def merge_informative_pair(
         dataframe = dataframe.drop(columns=[f'date_merge_{inf_tf}'])
 
     return dataframe
+
+
+def collect_informative_specs(strategy: Any) -> List[Dict[str, Any]]:
+    """Collect @informative-declared methods from a strategy instance.
+
+    Returns a list of {"method_name", "method", "timeframe", "asset"}
+    in definition order (dir() is alphabetical; order across methods of
+    the same timeframe does not matter for merges).
+    """
+    specs = []
+    for attr_name in dir(strategy):
+        if attr_name.startswith("__"):
+            continue
+        try:
+            attr = getattr(strategy, attr_name, None)
+        except Exception:
+            continue
+        if not callable(attr):
+            continue
+        meta = getattr(attr, "_bullseye_informative", None)
+        # Backwards compat: also honor a plain `_informative` marker.
+        if meta is None:
+            meta = getattr(attr, "_informative", None)
+        if not isinstance(meta, dict):
+            continue
+        specs.append({
+            "method_name": attr_name,
+            "method": attr,
+            "timeframe": str(meta.get("timeframe", "")),
+            "asset": str(meta.get("asset", "") or ""),
+        })
+    return specs
+
+
+def resolve_informative_pair(
+    pair: str, asset: str, stake_currency: str = "USDT"
+) -> str:
+    """Resolve an @informative asset template to a concrete pair.
+
+    Supports Freqtrade-style {stake}/{base}/{quote} placeholders; an
+    empty asset means the traded pair itself.
+    """
+    if not asset:
+        return pair
+    quote = stake_currency or "USDT"
+    base = pair
+    quote_of_pair = quote
+    if "/" in pair:
+        base, quote_of_pair = pair.split("/", 1)
+    elif "." in pair:
+        base = pair.split(".", 1)[0]
+    return (
+        asset.replace("{stake}", quote)
+        .replace("{quote}", quote_of_pair)
+        .replace("{base}", base)
+    )
 
 
 def timeframe_to_minutes(timeframe: str) -> int:

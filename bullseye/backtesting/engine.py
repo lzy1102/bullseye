@@ -27,7 +27,12 @@ from bullseye.order.position_manager import LocalTrade, PositionManager, MarketT
 from bullseye.order.order_executor import OrderExecutor
 from bullseye.order.fees import FeeModel
 from bullseye.order.settlement import SettlementType, init_settlement_detector
-from bullseye.strategy.interface import IStrategy
+from bullseye.strategy.interface import (
+    IStrategy,
+    collect_informative_specs,
+    merge_informative_pair,
+    resolve_informative_pair,
+)
 from bullseye.wallets.wallets import Wallets
 
 from .result import BacktestResult, BacktestTrade
@@ -527,6 +532,7 @@ class BacktestEngine:
             initial_balance=initial_balance,
             dividends=dividend_map,
             dividend_tax=dividend_tax,
+            timerange=timerange,
         )
 
         # Build result
@@ -780,6 +786,84 @@ class BacktestEngine:
 
         return self._clean_data(data)
 
+    def _load_informative_data(
+        self,
+        inf_pair: str,
+        inf_tf: str,
+        timerange: Optional[str],
+    ) -> Optional[Any]:
+        """Load (and clean) informative-timeframe data from disk."""
+        try:
+            handler = self._find_data_handler(inf_pair, inf_tf)
+            df = handler.ohlcv_get(inf_pair, inf_tf)
+        except Exception as e:
+            logger.warning(
+                f"Informative data load failed for {inf_pair} {inf_tf}: {e}"
+            )
+            return None
+        if df is None or df.empty:
+            return None
+        try:
+            cleaned = self._clean_data({inf_pair: df})
+            return cleaned.get(inf_pair)
+        except Exception as e:
+            logger.warning(
+                f"Informative data invalid for {inf_pair} {inf_tf}: {e}"
+            )
+            return None
+
+    def _apply_informative(
+        self,
+        strategy: IStrategy,
+        spec: Dict[str, Any],
+        base_df: Any,
+        base_pair: str,
+        base_timeframe: str,
+        inf_pair: str,
+        inf_tf: str,
+        data: Dict[str, pd.DataFrame],
+        timerange: Optional[str],
+        cache: Dict[tuple, Any],
+    ) -> Any:
+        """Run one @informative method and merge it into the base frame.
+
+        Same pair + same timeframe reuses the base frame directly. Missing
+        informative data warns and leaves the base frame untouched (never
+        fails the run; strategies should guard optional informative columns
+        with `in dataframe.columns`, as the sample strategy does).
+        """
+        try:
+            if inf_pair == base_pair and inf_tf == base_timeframe:
+                inf_df = base_df.copy()
+            else:
+                cache_key = (inf_pair, inf_tf)
+                if cache_key not in cache:
+                    cache[cache_key] = self._load_informative_data(
+                        inf_pair, inf_tf, timerange
+                    )
+                inf_df = cache[cache_key]
+                if inf_df is None or inf_df.empty:
+                    logger.warning(
+                        f"Informative {spec['method_name']} skipped: no data "
+                        f"for {inf_pair} {inf_tf}. Download it first, e.g. "
+                        f"bullseye download-data --market stock "
+                        f"--pairs {inf_pair} --timeframes {inf_tf}"
+                    )
+                    return base_df
+                inf_df = inf_df.copy()
+            analyzed = spec["method"](inf_df, {"pair": inf_pair})
+            if analyzed is None or getattr(analyzed, "empty", False):
+                return base_df
+            return merge_informative_pair(
+                base_df, analyzed, base_timeframe, inf_tf
+            )
+        except Exception as e:
+            logger.warning(
+                f"Informative {spec.get('method_name')} failed for "
+                f"{base_pair}: {e}. Continuing without it."
+            )
+            return base_df
+
     def _run_backtest_loop(
         self,
         strategy: IStrategy,
@@ -795,6 +879,7 @@ class BacktestEngine:
         initial_balance: float,
         dividends: Optional[Dict[str, List[tuple]]] = None,
         dividend_tax: float = 0.1,
+        timerange: Optional[str] = None,
     ) -> List[BacktestTrade]:
         """
         Main backtesting loop.
@@ -825,10 +910,42 @@ class BacktestEngine:
         # Precompute strategy signals once per pair (vectorized upfront).
         # Indicators must only depend on past data (rolling/EMA/shift etc.),
         # matching freqtrade semantics; non-causal operations would differ.
+        #
+        # @informative methods run first on their own timeframe/pair and are
+        # merged into the base frame (lookahead-safe) before the base
+        # populate_* calls — full Freqtrade multi-timeframe semantics.
+        informative_specs = collect_informative_specs(strategy)
+        informative_cache: Dict[tuple, Any] = {}
+        if informative_specs:
+            logger.info(
+                f"Backtest informative: {len(informative_specs)} method(s) "
+                f"({sorted({s['timeframe'] for s in informative_specs})})"
+            )
         precomputed_signals: Dict[str, Any] = {}
         for pair, df in data.items():
             metadata = {"pair": pair}
-            signal_df = strategy.populate_indicators(df.copy(), metadata)
+            work_df = df.copy()
+            for spec in informative_specs:
+                inf_tf = spec["timeframe"]
+                if not inf_tf:
+                    continue
+                inf_pair = resolve_informative_pair(
+                    pair, spec["asset"],
+                    stake_currency=self._config.stake_currency,
+                )
+                work_df = self._apply_informative(
+                    strategy=strategy,
+                    spec=spec,
+                    base_df=work_df,
+                    base_pair=pair,
+                    base_timeframe=timeframe,
+                    inf_pair=inf_pair,
+                    inf_tf=inf_tf,
+                    data=data,
+                    timerange=timerange,
+                    cache=informative_cache,
+                )
+            signal_df = strategy.populate_indicators(work_df, metadata)
             signal_df = strategy.populate_entry_trend(signal_df, metadata)
             signal_df = strategy.populate_exit_trend(signal_df, metadata)
             precomputed_signals[pair] = signal_df
@@ -1026,6 +1143,7 @@ class BacktestEngine:
                 wallets=wallets,
                 open_trades=open_trades,
                 closed_bt_trades=closed_bt_trades,
+                strategy=strategy,
             )
 
         logger.info(f"Backtest complete: {len(closed_bt_trades)} trades")
@@ -1051,6 +1169,57 @@ class BacktestEngine:
             self._callback_failures += 1
             logger.warning(f"Strategy callback {label} failed: {e}", exc_info=True)
             return default
+
+    @staticmethod
+    def _make_fill_order(
+        pair: str,
+        side: str,
+        price: float,
+        amount: float,
+        current_date: datetime,
+        order_type: str = "market",
+    ):
+        """Minimal Freqtrade-compatible fill notice for order_filled().
+
+        Backtest fills are immediate; this carries side/price/amount/cost
+        plus the commonly-read ft_* attributes. Documented subset —
+        strategies needing full Order books should run live.
+        """
+        import uuid
+        from types import SimpleNamespace
+
+        cost = (price or 0.0) * (amount or 0.0)
+        return SimpleNamespace(
+            order_id=str(uuid.uuid4())[:8],
+            pair=pair,
+            side=side,
+            ft_order_side=side,
+            order_type=order_type,
+            status="closed",
+            ft_is_open=False,
+            price=price,
+            average=price,
+            amount=amount,
+            filled=amount,
+            remaining=0.0,
+            cost=cost,
+            order_date=current_date,
+            order_filled_date=current_date,
+        )
+
+    def _fire_order_filled(self, strategy: IStrategy, pair: str,
+                           trade: LocalTrade, order) -> None:
+        """Invoke order_filled(); fills must never break the loop."""
+        if strategy is None:
+            return
+        self._safe_callback(
+            f"order_filled({pair})",
+            lambda: strategy.order_filled(
+                pair=pair, trade=trade, order=order,
+                current_time=order.order_filled_date,
+            ),
+            None,
+        )
 
     @staticmethod
     def _detect_market_type(pair: str) -> "MarketType":
@@ -1299,6 +1468,13 @@ class BacktestEngine:
         # deducting fee_open here as well would double-charge it.
         wallets.deduct_amount(self._config.stake_currency, actual_stake)
         logger.debug(f"Entry: {pair} @ {fill_rate}, stake={actual_stake}")
+        self._fire_order_filled(
+            strategy, pair, trade,
+            self._make_fill_order(
+                pair, "buy" if not is_short else "sell",
+                fill_rate, amount, current_date,
+            ),
+        )
         return trade
 
     def _check_entry(
@@ -1632,6 +1808,38 @@ class BacktestEngine:
             logger.debug(f"Exit blocked for {trade.pair}: locked at limit-down")
             return
 
+        # 0b1. Dynamic stoploss (use_custom_stoploss): reprice the stop
+        # level every candle from the strategy's ratio. Previously never
+        # invoked, so custom trailing/breakeven logic silently did nothing.
+        if getattr(strategy, 'use_custom_stoploss', False):
+            new_sl = self._safe_callback(
+                f"custom_stoploss({trade.pair})",
+                lambda: strategy.custom_stoploss(
+                    pair=trade.pair,
+                    trade=trade,
+                    current_time=current_date,
+                    current_rate=current_rate,
+                    current_profit=net_ratio,
+                ),
+                None,
+            )
+            if new_sl is not None:
+                try:
+                    ratio = float(new_sl)
+                except (TypeError, ValueError):
+                    ratio = None
+                if ratio is None or not (ratio == ratio) or ratio > 0 or ratio < -1:
+                    logger.debug(
+                        f"Ignoring invalid custom_stoploss {new_sl!r} "
+                        f"for {trade.pair} (need -1 <= ratio <= 0)"
+                    )
+                else:
+                    trade.stop_loss_pct = ratio
+                    trade.stop_loss = trade.open_rate * (
+                        (1 - ratio) if trade.is_short else (1 + ratio)
+                    )
+                    trade.is_stop_loss_trailing = True
+
         # 0b. Liquidation: leveraged loss wiping margin forces exit.
         # Previously ignored (no margin model), letting insolvent positions
         # ride to profit. Uses gross ratio vs -1/leverage.
@@ -1646,6 +1854,7 @@ class BacktestEngine:
                 wallets=wallets,
                 open_trades=open_trades,
                 closed_bt_trades=closed_bt_trades,
+                strategy=strategy,
             )
             return
 
@@ -1670,6 +1879,7 @@ class BacktestEngine:
                 wallets=wallets,
                 open_trades=open_trades,
                 closed_bt_trades=closed_bt_trades,
+                strategy=strategy,
             )
             return
 
@@ -1705,6 +1915,7 @@ class BacktestEngine:
                             wallets=wallets,
                             open_trades=open_trades,
                             closed_bt_trades=closed_bt_trades,
+                            strategy=strategy,
                         )
                         return
                 else:
@@ -1718,6 +1929,7 @@ class BacktestEngine:
                             wallets=wallets,
                             open_trades=open_trades,
                             closed_bt_trades=closed_bt_trades,
+                            strategy=strategy,
                         )
                         return
 
@@ -1784,6 +1996,7 @@ class BacktestEngine:
                             wallets=wallets,
                             open_trades=open_trades,
                             closed_bt_trades=closed_bt_trades,
+                            strategy=strategy,
                         )
                         return
 
@@ -1832,6 +2045,7 @@ class BacktestEngine:
                     wallets=wallets,
                     open_trades=open_trades,
                     closed_bt_trades=closed_bt_trades,
+                    strategy=strategy,
                 )
                 return
 
@@ -1880,6 +2094,7 @@ class BacktestEngine:
                 wallets=wallets,
                 open_trades=open_trades,
                 closed_bt_trades=closed_bt_trades,
+                strategy=strategy,
             )
 
     def _close_trade(
@@ -1892,6 +2107,7 @@ class BacktestEngine:
         wallets: Wallets,
         open_trades: Dict[str, LocalTrade],
         closed_bt_trades: List[BacktestTrade],
+        strategy: Optional[IStrategy] = None,
     ) -> None:
         """Close a trade and record the result."""
         # Slippage: exits are market orders - longs sell lower, shorts buy back higher
@@ -1957,6 +2173,13 @@ class BacktestEngine:
         logger.debug(
             f"Exit: {trade.pair} @ {rate}, profit={profit_abs:.4f} "
             f"({profit_pct:.2f}%), reason={exit_reason}"
+        )
+        self._fire_order_filled(
+            strategy, trade.pair, trade,
+            self._make_fill_order(
+                trade.pair, "sell" if not trade.is_short else "buy",
+                rate, trade.amount, current_date,
+            ),
         )
 
     def _slipped_price(self, rate: float, *, buy: bool) -> float:
