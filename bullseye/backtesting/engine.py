@@ -1432,6 +1432,92 @@ class BacktestEngine:
         except Exception as e:
             logger.warning(f"Error checking entry for {pair}: {e}", exc_info=True)
 
+    def _check_adjust(
+        self,
+        trade: LocalTrade,
+        strategy: IStrategy,
+        current_rate: float,
+        prev_close: float,
+        current_date: datetime,
+        wallets: Wallets,
+    ) -> None:
+        """Position adjustment (DCA / grid averaging-down).
+
+        Calls `strategy.adjust_trade_position()`; a positive return value is
+        treated as additional stake (long buys only — A-share grids never
+        short). The trade's open_rate is repriced to the volume-weighted
+        average cost so every downstream profit check uses the true basis.
+        """
+        if trade.is_short:
+            return
+        # Limit-up lock rejects buys (mirrors entry logic).
+        if (
+            trade.market_type == MarketType.STOCK
+            and self._enforce_price_limits()
+            and self._locked_at_limit_up(
+                current_rate, prev_close, self._limit_ratio_for(trade.pair)
+            )
+        ):
+            return
+        available = wallets.get_available_stake_amount()
+        if available <= 0:
+            return
+        fill = self._slipped_price(current_rate, buy=True)
+        net = self._net_profit_ratio(trade, current_rate)
+        add = self._safe_callback(
+            f"adjust_trade_position({trade.pair})",
+            lambda: strategy.adjust_trade_position(
+                trade=trade,
+                current_time=current_date,
+                current_rate=current_rate,
+                current_profit=net,
+                min_stake=0.0,
+                max_stake=available,
+                current_entry_rate=fill,
+                current_exit_rate=self._slipped_price(current_rate, buy=False),
+                current_entry_profit=net,
+                current_exit_profit=net,
+                min_limit=0.0,
+                max_limit=available,
+            ),
+            None,
+        )
+        if add is None:
+            return
+        try:
+            add = float(add)
+        except (TypeError, ValueError):
+            logger.warning(f"Ignoring non-numeric adjust stake {add!r}")
+            return
+        if add <= 0:
+            return
+        add = min(add, available)
+        amount = add / fill if fill > 0 else 0
+        if amount <= 0:
+            return
+        if trade.market_type == MarketType.STOCK and self._enforce_lot_size():
+            import math
+
+            lots = math.floor(amount / 100)
+            if lots < 1:
+                logger.debug(f"Adjust skipped for {trade.pair}: below 1 lot")
+                return
+            amount = lots * 100
+            add = amount * fill
+        fee = self._calc_fee(add, is_sell=False)
+        # Reprice to volume-weighted average cost.
+        total_cost = trade.open_rate * trade.amount + fill * amount
+        trade.amount += amount
+        trade.open_rate = total_cost / trade.amount if trade.amount > 0 else fill
+        trade.stake_amount += add
+        trade.fee_open += fee
+        trade.update_rate(fill)
+        wallets.deduct_amount(self._config.stake_currency, add)
+        logger.debug(
+            f"Adjust: {trade.pair} +{amount:.0f} @ {fill:.2f}, "
+            f"avg={trade.open_rate:.2f}, stake={trade.stake_amount:.2f}"
+        )
+
     def _check_exit(
         self,
         trade: LocalTrade,
@@ -1479,6 +1565,23 @@ class BacktestEngine:
                 f"Exit blocked for {trade.pair}: T+1 settlement until {settlement_date}"
             )
             return
+
+        # 0a1. Position adjustment (DCA / grid adds). Buys only, so the
+        # T+1 exit block above does not apply; a limit-up lock still
+        # rejects the add (no sellers). Gated by the strategy flag so
+        # existing strategies are unaffected.
+        if getattr(strategy, 'position_adjustment_enable', False):
+            self._check_adjust(
+                trade=trade,
+                strategy=strategy,
+                current_rate=current_rate,
+                prev_close=prev_close,
+                current_date=current_date,
+                wallets=wallets,
+            )
+            # Recompute net ratio after a possible add (average cost moved).
+            net_ratio = self._net_profit_ratio(trade, current_rate)
+            profit_ratio = trade.calc_profit_ratio(current_rate)
 
         # 0a. A-share limit-down: no buyers at the close fill — hold the
         # position (all exit paths blocked; end-of-data force_exit still

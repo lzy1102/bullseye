@@ -988,6 +988,57 @@ class TestBenchmark:
         assert result.metrics.benchmark_return_pct == pytest.approx(0.0)
 
 
+class TestGridAdjust:
+    """adjust_trade_position averaging-down and never-sell-red exits."""
+
+    def _dip_data(self):
+        import numpy as np
+
+        n = 120
+        px = np.concatenate([np.linspace(40, 28, 60), np.linspace(28, 42, 60)])
+        dates = pd.date_range("2024-01-01", periods=n, freq="1h")
+        return {"600036.SH": pd.DataFrame({
+            "date": dates, "open": px, "high": px * 1.005,
+            "low": px * 0.995, "close": px, "volume": [10000.0] * n,
+        })}
+
+    def test_grid_adds_and_exits_profitable(self):
+        sys.path.insert(0, str(Path(__file__).parent.parent.parent
+                               / "user_data" / "strategies"))
+        from GridBank10 import GridBank10
+
+        config = Config()
+        config.set("dry_run_wallet", 200000)
+        config.set("stake_amount", 12000)
+        config.set("max_open_trades", 1)
+        engine = BacktestEngine(config)
+        result = engine.run(
+            strategy_class=GridBank10, pairlist=["600036.SH"],
+            timeframe="1h", data=self._dip_data(),
+            initial_balance=200000, fee=0.001,
+        )
+        assert result.metrics.total_trades >= 1
+        first = result.trades[0]
+        # Averaged down across several tranches (more than one lot).
+        assert first.amount > 300
+        assert first.stake_amount > 12000
+        # Average cost below the initial ~40 fill.
+        assert first.open_rate < 40.0
+        # No losing signal exits (force_exit at data end excepted).
+        for t in result.trades:
+            if t.exit_reason != "force_exit":
+                assert t.profit_abs > 0, t
+
+    def test_adjust_disabled_by_default(self):
+        # FlatTestStrategy has no position_adjustment_enable: single lot.
+        data = make_flat_data({"600036.SH": 30})
+        trades = run_flat_backtest(FlatTestStrategy, data,
+                                   stake_amount=20000,
+                                   initial_balance=100000)
+        assert len(trades) == 1
+        assert trades[0].amount == pytest.approx(200.0)
+
+
 class TestStockDownloadHelpers:
     """KlineData -> OHLCV conversion and stock download wiring."""
 
