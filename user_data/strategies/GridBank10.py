@@ -35,7 +35,9 @@ class GridBank10(IStrategy):
     max_tranches: int = 5
     dip_step: float = 0.05
     take_profit: float = 0.05
-    tranche_stake: float = 12000.0
+    # Per-tranche stake. <= 0 means AUTO: total equity / max_tranches,
+    # so position sizing follows the account with no manual tuning.
+    tranche_stake: float = 0.0
 
     def __init__(self):
         # Per-(run, pair) grid state; a fresh instance starts every run.
@@ -48,6 +50,36 @@ class GridBank10(IStrategy):
             self._open_trade_id[pair] = trade_id
             self._adds[pair] = 0
             self._last_buy.pop(pair, None)
+
+    def _auto_tranche(self) -> float:
+        """One tranche = total equity / max_tranches (auto sizing)."""
+        try:
+            total = self.wallets.get_total_stake_amount()
+        except Exception:
+            total = 0.0
+        if total <= 0:
+            return 0.0
+        return total / max(1, int(self.max_tranches))
+
+    def custom_stake_amount(
+        self,
+        pair: str,
+        current_time,
+        current_rate: float,
+        proposed_stake: float,
+        min_stake: Optional[float],
+        max_stake: float,
+        leverage: float,
+        entry_tag: Optional[str],
+        side: str,
+        **kwargs,
+    ) -> Optional[float]:
+        # Auto mode: first tranche equals every other tranche.
+        if self.tranche_stake <= 0:
+            auto = self._auto_tranche()
+            if auto > 0:
+                return min(auto, max_stake)
+        return None  # fall back to engine/config stake
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         return dataframe
@@ -89,7 +121,14 @@ class GridBank10(IStrategy):
         if ref and current_rate <= ref * (1 - self.dip_step):
             self._adds[pair] = self._adds.get(pair, 0) + 1
             self._last_buy[pair] = current_rate
-            return min(self.tranche_stake, max_stake)
+            size = (self.tranche_stake if self.tranche_stake > 0
+                    else self._auto_tranche())
+            if size <= 0:
+                # No measurable equity (e.g. wallets unavailable): skip.
+                self._adds[pair] -= 1
+                self._last_buy[pair] = ref
+                return None
+            return min(size, max_stake)
         if pair not in self._last_buy:
             # Record the initial fill for the dip ladder.
             self._last_buy[pair] = trade.open_rate
