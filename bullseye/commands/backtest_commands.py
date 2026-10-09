@@ -331,3 +331,100 @@ def _analyze_by_pair(trades: list) -> dict:
             stats[pair]['losses'] += 1
 
     return stats
+
+
+def _safe_name(text) -> str:
+    """Sanitize a fragment for result filenames."""
+    return "".join(
+        c for c in str(text or "").strip() if c.isalnum() or c in "._+-"
+    ) or "unknown"
+
+
+def backtest_target_name(payload: dict, mtime_fallback: str = "") -> str:
+    """{strategy}-{pairs}-{timeframe}-{created}.json for a backtest payload."""
+    strategy = _safe_name(payload.get("strategy") or "backtest")
+    config = payload.get("config", {}) or {}
+    pairs = list(config.get("pairlist", []) or [])
+    if not pairs:
+        seen = list(dict.fromkeys(
+            t.get("pair", "") for t in payload.get("trades", []) if t.get("pair")
+        ))
+        pairs = seen
+    pair_part = f"{pairs[0]}+{len(pairs) - 1}" if len(pairs) > 3 else "+".join(pairs)
+    timeframe = _safe_name(config.get("timeframe", "tf"))
+    created = payload.get("created_at", "") or mtime_fallback
+    stamp = "".join(c for c in str(created) if c.isdigit())[:14] or mtime_fallback
+    return f"{strategy}-{_safe_name(pair_part)}-{timeframe}-{stamp}.json"
+
+
+def hyperopt_target_name(payload: dict, mtime_fallback: str = "") -> str:
+    """{strategy}-hyperopt-{timerange}-{created}.json for hyperopt payloads."""
+    strategy = _safe_name(payload.get("strategy") or "hyperopt")
+    timerange = _safe_name(payload.get("timerange") or "")
+    created = payload.get("created_at", "") or mtime_fallback
+    stamp = "".join(c for c in str(created) if c.isdigit())[:14] or mtime_fallback
+    stem = f"{strategy}-hyperopt"
+    if timerange and timerange != "unknown":
+        stem += f"-{timerange}"
+    return f"{stem}-{stamp}.json"
+
+
+def _unique_path(directory: Path, name: str) -> Path:
+    """Append -2/-3 on collision instead of overwriting."""
+    candidate = directory / name
+    if not candidate.exists():
+        return candidate
+    stem, suffix = name.rsplit(".", 1)
+    i = 2
+    while True:
+        candidate = directory / f"{stem}-{i}.{suffix}"
+        if not candidate.exists():
+            return candidate
+        i += 1
+
+
+@click.command(name='organize-results')
+@click.option('--dry-run', is_flag=True, help='Preview renames without applying')
+def organize_results(dry_run: bool):
+    """
+    Rename legacy result files to the naming convention.
+
+    backtest-result-*.json -> {strategy}-{pairs}-{timeframe}-{timestamp}.json
+    hyperopt-result-*.json -> {strategy}-hyperopt-{timerange}-{timestamp}.json
+
+    Examples:
+        bullseye organize-results
+        bullseye organize-results --dry-run
+    """
+    renamed, skipped = 0, 0
+
+    def _organize(directory: Path, prefix: str, namer):
+        nonlocal renamed, skipped
+        if not directory.exists():
+            return
+        for filepath in sorted(directory.glob(f"{prefix}*.json")):
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    payload = json.load(f)
+                target = _unique_path(directory, namer(
+                    payload, datetime.fromtimestamp(
+                        filepath.stat().st_mtime).strftime("%Y%m%d%H%M%S")))
+                if target.name == filepath.name:
+                    continue
+                if dry_run:
+                    console.print(f"[cyan]{filepath.name}[/cyan] -> [green]{target.name}[/green]")
+                else:
+                    filepath.rename(target)
+                    console.print(f"[green]✓ {filepath.name} -> {target.name}[/green]")
+                renamed += 1
+            except Exception as e:
+                console.print(f"[yellow]Skipped {filepath.name}: {e}[/yellow]")
+                skipped += 1
+
+    _organize(get_backtest_results_dir(), "backtest-result-", backtest_target_name)
+    _organize(Path("user_data/hyperopt"), "hyperopt-result-", hyperopt_target_name)
+
+    if dry_run:
+        console.print(f"\n[blue]Would rename {renamed} files ({skipped} skipped)[/blue]")
+    else:
+        console.print(f"\n[green]Renamed {renamed} files ({skipped} skipped)[/green]")

@@ -1475,3 +1475,60 @@ class TestBacktestParamsAutoDiscovery:
         # class default roi 100.0 never reached: single forced exit.
         assert result.metrics.total_trades == 1
         assert result.trades[0].exit_reason == "force_exit"
+
+
+class TestResultNaming:
+    """{strategy}-{pairs}-{timeframe} file convention + organizer."""
+
+    def test_save_uses_convention(self, tmp_path, monkeypatch):
+        import json as _json
+
+        monkeypatch.chdir(tmp_path)
+        result = BacktestResult(
+            strategy_name="BankMACross",
+            trades=[BacktestTrade(
+                pair="600036.SH",
+                entry_date=datetime(2024, 1, 1),
+                exit_date=datetime(2024, 1, 2),
+                open_rate=30.0, close_rate=31.0, amount=600.0,
+                stake_amount=18000.0, profit_abs=600.0, profit_pct=3.0,
+                exit_reason="roi", trade_duration=24.0,
+            )],
+            config={"timeframe": "1d", "pairlist": ["600036.SH"]},
+        )
+        saved = result.save()
+        name = saved.split("/")[-1].split("\\")[-1]
+        assert name.startswith("BankMACross-600036.SH-1d-")
+        assert name.endswith(".json")
+
+    def test_organize_renames_legacy(self, tmp_path, monkeypatch):
+        import json as _json
+        from bullseye.commands.backtest_commands import (
+            backtest_target_name,
+        )
+        from click.testing import CliRunner
+        from bullseye.commands.backtest_commands import organize_results
+
+        monkeypatch.chdir(tmp_path)
+        legacy = (tmp_path / "user_data" / "backtest_results"
+                  / "backtest-result-20240101_120000.json")
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(_json.dumps({
+            "strategy": "GridBank10",
+            "created_at": "2024-01-01T12:00:00",
+            "config": {"timeframe": "5m", "pairlist": ["BTC/USDT"]},
+            "metrics": {}, "trades": [],
+        }), encoding="utf-8")
+
+        assert backtest_target_name(
+            {"strategy": "GridBank10",
+             "created_at": "2024-01-01T12:00:00",
+             "config": {"timeframe": "5m", "pairlist": ["BTC/USDT"]},
+             "trades": []}
+        ) == "GridBank10-BTCUSDT-5m-20240101120000.json"
+
+        runner = CliRunner()
+        cli_result = runner.invoke(organize_results, [])
+        assert cli_result.exit_code == 0
+        names = [p.name for p in legacy.parent.glob("*.json")]
+        assert names == ["GridBank10-BTCUSDT-5m-20240101120000.json"]

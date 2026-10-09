@@ -641,12 +641,36 @@ class BacktestResult:
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent, default=str)
 
+    @staticmethod
+    def _safe_name(text: str) -> str:
+        """Sanitize a fragment for filenames (keep dots for .SH/.SZ)."""
+        return "".join(
+            c for c in str(text or "").strip() if c.isalnum() or c in "._+-"
+        ) or "unknown"
+
+    def default_filename(self) -> str:
+        """{strategy}-{pairs}-{timeframe}-{timestamp}.json convention."""
+        pairs = list((self.config or {}).get("pairlist", []) or [])
+        if not pairs and self.trades:
+            seen = list(dict.fromkeys(t.pair for t in self.trades if t.pair))
+            pairs = seen
+        if len(pairs) > 3:
+            pair_part = f"{pairs[0]}+{len(pairs) - 1}"
+        else:
+            pair_part = "+".join(pairs) if pairs else "nopair"
+        timeframe = (self.config or {}).get("timeframe", "tf")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return (f"{self._safe_name(self.strategy_name or 'backtest')}-"
+                f"{self._safe_name(pair_part)}-"
+                f"{self._safe_name(timeframe)}-{timestamp}.json")
+
     def save(self, filepath: Optional[str] = None) -> str:
         """
         Save backtest results to a JSON file.
 
         Args:
-            filepath: Output file path. If None, auto-generates.
+            filepath: Output file path. If None, auto-generates following
+                the {strategy}-{pairs}-{timeframe}-{timestamp} convention.
 
         Returns:
             Path to the saved file.
@@ -654,8 +678,7 @@ class BacktestResult:
         if filepath is None:
             results_dir = Path("user_data/backtest_results")
             results_dir.mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filepath = str(results_dir / f"backtest-result-{timestamp}.json")
+            filepath = str(results_dir / self.default_filename())
 
         path = Path(filepath)
         path.parent.mkdir(parents=True, exist_ok=True)

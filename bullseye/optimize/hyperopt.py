@@ -1405,12 +1405,28 @@ class HyperoptEngine:
         return sorted(self._results, key=lambda x: x.loss, reverse=not ascending)
 
     def _export_results(self, filepath: Optional[str] = None) -> str:
-        """Export hyperopt results to strict-JSON file."""
+        """Export hyperopt results to strict-JSON file.
+
+        Default name follows the {strategy}-hyperopt-{timerange}-{timestamp}
+        convention so runs are identifiable without opening them.
+        """
         if filepath is None:
             results_dir = Path("user_data/hyperopt")
             results_dir.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filepath = str(results_dir / f"hyperopt-result-{timestamp}.json")
+            strategy = "".join(
+                c for c in str(getattr(self, "_strategy_name", "")
+                               or "hyperopt").strip()
+                if c.isalnum() or c in "._+-"
+            ) or "hyperopt"
+            timerange = "".join(
+                c for c in str(getattr(self, "_timerange", "") or "").strip()
+                if c.isalnum() or c in "._+-"
+            )
+            stem = f"{strategy}-hyperopt"
+            if timerange:
+                stem += f"-{timerange}"
+            filepath = str(results_dir / f"{stem}-{timestamp}.json")
 
         path = Path(filepath)
         path.parent.mkdir(parents=True, exist_ok=True)

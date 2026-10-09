@@ -26,7 +26,7 @@ from .commands import (
     # List commands
     list_markets, list_pairs, list_hyperoptloss,
     # Backtest commands
-    backtesting_show, backtesting_analysis,
+    backtesting_show, backtesting_analysis, organize_results,
     # Trade commands
     show_trades, test_pairlist, convert_db,
     # Plot commands
@@ -971,6 +971,7 @@ cli.add_command(list_pairs)
 cli.add_command(list_hyperoptloss)
 cli.add_command(backtesting_show)
 cli.add_command(backtesting_analysis)
+cli.add_command(organize_results)
 cli.add_command(show_trades)
 cli.add_command(test_pairlist)
 cli.add_command(convert_db)
