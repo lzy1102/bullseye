@@ -171,12 +171,14 @@ def trade(ctx, dry: bool, live: bool, strategy: Optional[str], config: Optional[
 @click.option('--max-open-trades', type=int, help='Max concurrent open trades')
 @click.option('--fee', type=float, default=None, help='Flat fee rate (e.g., 0.001 for 0.1%); default: config, else 0.001')
 @click.option('--slippage', type=float, default=None, help='Slippage rate (e.g., 0.001 for 0.1% worse fills)')
+@click.option('--benchmark', type=str, default=None, help='Benchmark pair for relative metrics (e.g., 000300.SH)')
 @click.option('--export', type=str, help='Export results to JSON file')
 @click.pass_context
 def backtesting(ctx, strategy: str, timeframe: str, timerange: Optional[str],
                 config: Optional[str], stake_amount: Optional[float],
                 initial_balance: float, max_open_trades: Optional[int],
-                fee: Optional[float], slippage: Optional[float], export: Optional[str]):
+                fee: Optional[float], slippage: Optional[float],
+                benchmark: Optional[str], export: Optional[str]):
     """
     Run backtesting
 
@@ -185,9 +187,12 @@ def backtesting(ctx, strategy: str, timeframe: str, timerange: Optional[str],
         bullseye backtesting --strategy MyStrategy --timerange 20240101-20241231
         bullseye backtesting --strategy MyStrategy --initial-balance 10000 --fee 0.001
         bullseye backtesting --strategy MyStrategy --slippage 0.0005
+        bullseye backtesting --strategy MyStrategy --benchmark 000300.SH
     """
     console.print("[bold green]Running backtest...[/bold green]")
     console.print(f"[blue]Strategy:[/blue] {strategy}")
+    if benchmark:
+        console.print(f"[blue]Benchmark:[/blue] {benchmark}")
     if timeframe:
         console.print(f"[blue]Timeframe:[/blue] {timeframe}")
     if timerange:
@@ -220,6 +225,7 @@ def backtesting(ctx, strategy: str, timeframe: str, timerange: Optional[str],
             fee=fee,
             export=export,
             slippage=slippage,
+            benchmark=benchmark,
         )
 
         m = result.metrics
@@ -244,9 +250,20 @@ def backtesting(ctx, strategy: str, timeframe: str, timerange: Optional[str],
         table.add_row("Sharpe Ratio", f"{m.sharpe_ratio:.2f}")
         table.add_row("Sortino Ratio", f"{m.sortino_ratio:.2f}")
         table.add_row("Max Drawdown", f"{m.max_drawdown:.2f}%")
+        table.add_row("Ulcer Index", f"{m.ulcer_index:.2f}")
+        table.add_row("VaR 95/99", f"{m.var_95:.4f} / {m.var_99:.4f}")
+        table.add_row("SQN", f"{m.sqn:.2f}")
+        table.add_row("Kelly", f"{m.kelly:.4f}")
+        table.add_row("Exposure", f"{m.exposure_pct:.2f}%")
         table.add_row("Avg Duration", f"{m.avg_trade_duration:.1f}h")
         table.add_row("Initial Balance", f"{m.initial_balance:.2f}")
         table.add_row("Final Balance", f"{m.final_balance:.2f}")
+        if m.benchmark_return_pct or m.excess_return_pct or benchmark:
+            table.add_row("Benchmark %", f"{m.benchmark_return_pct:.2f}%")
+            table.add_row("Excess %", f"{m.excess_return_pct:.2f}%")
+            table.add_row("Tracking Err", f"{m.tracking_error:.2f}")
+            table.add_row("Info Ratio", f"{m.information_ratio:.2f}")
+            table.add_row("Beta / Alpha", f"{m.beta:.4f} / {m.alpha:.2f}")
 
         console.print(table)
 

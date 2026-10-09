@@ -321,7 +321,8 @@ class BacktestEngine:
         export: Optional[str] = None,
         data: Optional[Dict[str, Any]] = None,
         slippage: Optional[float] = None,
-        dividends: Optional[Dict[str, Any]] = None,
+            dividends: Optional[Dict[str, Any]] = None,
+        benchmark: Optional[Any] = None,
     ) -> BacktestResult:
         """
         Run backtesting.
@@ -345,6 +346,10 @@ class BacktestEngine:
             dividends: In-memory dividend calendars
                 {pair: [{"ex_date": date/str, "cash_div": float per share}]};
                 disk-loaded runs read `{pair}.dividends.json` instead
+            benchmark: Relative-performance baseline — a pair code loaded
+                from disk (same timeframe/timerange, e.g. "000300.SH"), an
+                OHLCV DataFrame with date/close, or a {date: close} dict.
+                Missing files warn and continue without relative metrics.
 
         Returns:
             BacktestResult with trades and metrics
@@ -518,10 +523,16 @@ class BacktestEngine:
                 "callback_failures": self._callback_failures,
                 "dividends_paid": getattr(self, "_dividends_paid", 0.0),
                 "dividend_tax": dividend_tax,
+                "benchmark": benchmark if isinstance(benchmark, str) else None,
             },
             equity_curve=getattr(self, "_last_equity_curve", []),
         )
-        result.calculate_metrics(initial_balance=initial_balance)
+        result.calculate_metrics(
+            initial_balance=initial_balance,
+            benchmark=self._resolve_benchmark(
+                benchmark, timeframe, timerange, pairlist
+            ),
+        )
 
         # Fold ex-date dividend cash (credited to the wallet during the
         # loop) into the headline profit figures so metrics, final balance
@@ -542,6 +553,42 @@ class BacktestEngine:
             result.save(export)
 
         return result
+
+    def _resolve_benchmark(
+        self,
+        benchmark: Optional[Any],
+        timeframe: str,
+        timerange: Optional[str],
+        pairlist: List[str],
+    ) -> Optional[Any]:
+        """Normalize the `benchmark` argument to an OHLCV DataFrame.
+
+        A pair code (e.g. "000300.SH" for 沪深300) is loaded from disk with
+        the same timeframe/timerange; a missing file warns and yields None
+        instead of failing the backtest. DataFrames/dicts pass through.
+        """
+        if benchmark is None or not isinstance(benchmark, str):
+            return benchmark
+        if benchmark in pairlist:
+            logger.warning(
+                f"Benchmark '{benchmark}' is also traded; relative metrics "
+                "remain valid but interpret with care."
+            )
+        try:
+            data = self._load_data([benchmark], timeframe, timerange)
+            df = data.get(benchmark)
+            if df is None or df.empty:
+                logger.warning(
+                    f"Benchmark data not found for '{benchmark}' "
+                    f"{timeframe}; continuing without relative metrics. "
+                    "Download it first, e.g. "
+                    f"bullseye download-data --market stock --pairs {benchmark}"
+                )
+                return None
+            return df
+        except Exception as e:
+            logger.warning(f"Benchmark load failed for '{benchmark}': {e}")
+            return None
 
     def _load_strategy(self, strategy_name: str) -> IStrategy:
         """Load a strategy by name."""

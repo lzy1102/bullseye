@@ -70,6 +70,20 @@ class BacktestMetrics:
     calmar_ratio: float = 0.0
     max_drawdown: float = 0.0
     max_drawdown_abs: float = 0.0
+    ulcer_index: float = 0.0
+    var_95: float = 0.0
+    var_99: float = 0.0
+    cvar_95: float = 0.0
+    cvar_99: float = 0.0
+    sqn: float = 0.0
+    kelly: float = 0.0
+    exposure_pct: float = 0.0
+    benchmark_return_pct: float = 0.0
+    excess_return_pct: float = 0.0
+    tracking_error: float = 0.0
+    information_ratio: float = 0.0
+    beta: float = 0.0
+    alpha: float = 0.0
     avg_trade_duration: float = 0.0
     best_pair: str = ""
     worst_pair: str = ""
@@ -125,6 +139,20 @@ class BacktestMetrics:
             "calmar_ratio": _r(self.calmar_ratio, 2),
             "max_drawdown": _r(self.max_drawdown, 2),
             "max_drawdown_abs": _r(self.max_drawdown_abs, 4),
+            "ulcer_index": _r(self.ulcer_index, 2),
+            "var_95": _r(self.var_95, 4),
+            "var_99": _r(self.var_99, 4),
+            "cvar_95": _r(self.cvar_95, 4),
+            "cvar_99": _r(self.cvar_99, 4),
+            "sqn": _r(self.sqn, 2),
+            "kelly": _r(self.kelly, 4),
+            "exposure_pct": _r(self.exposure_pct, 2),
+            "benchmark_return_pct": _r(self.benchmark_return_pct, 2),
+            "excess_return_pct": _r(self.excess_return_pct, 2),
+            "tracking_error": _r(self.tracking_error, 2),
+            "information_ratio": _r(self.information_ratio, 2),
+            "beta": _r(self.beta, 4),
+            "alpha": _r(self.alpha, 2),
             "avg_trade_duration_hours": _r(self.avg_trade_duration, 2),
             "best_pair": self.best_pair,
             "worst_pair": self.worst_pair,
@@ -160,9 +188,20 @@ class BacktestResult:
         self.equity_curve: List[tuple] = equity_curve or []
         self.created_at = datetime.now()
 
-    def calculate_metrics(self, initial_balance: float = 1000.0) -> None:
+    def calculate_metrics(
+        self,
+        initial_balance: float = 1000.0,
+        benchmark: Any = None,
+    ) -> None:
         """
         Calculate all backtest metrics from the trade list.
+
+        Args:
+            initial_balance: Starting balance.
+            benchmark: Optional benchmark prices for relative metrics
+                (DataFrame with date/close columns, {date: close} dict, or
+                Series). Produces benchmark_return_pct, excess_return_pct,
+                tracking_error, information_ratio, beta and alpha.
         """
         if not self.trades:
             metrics = BacktestMetrics(
@@ -190,6 +229,8 @@ class BacktestResult:
                     metrics.sharpe_ratio = self._calc_sharpe(daily)
                     metrics.sortino_ratio = self._calc_sortino(daily)
                 metrics.calmar_ratio = self._calc_calmar([], metrics.max_drawdown, initial_balance)
+                self._apply_risk_metrics(metrics, daily, [], [])
+            self._apply_benchmark(metrics, benchmark)
             self.metrics = metrics
             return
 
@@ -210,6 +251,7 @@ class BacktestResult:
 
         sharpe = self._calc_sharpe(profits)
         sortino = self._calc_sortino(profits)
+        daily: List[float] = []
         if self.equity_curve:
             # Prefer daily-return statistics from the equity curve:
             # annualizing per-trade returns is conceptually wrong.
@@ -223,6 +265,11 @@ class BacktestResult:
         else:
             max_dd, max_dd_abs = self._calc_max_drawdown(profits, initial_balance)
         calmar = self._calc_calmar(profit_pcts, max_dd, initial_balance)
+        ulcer = self._calc_ulcer()
+        var_95, var_99, cvar_95, cvar_99 = self._calc_var_cvar(daily)
+        sqn = self._calc_sqn(profit_pcts)
+        kelly = self._calc_kelly(winning, losing)
+        exposure = self._calc_exposure()
 
         pair_profits: Dict[str, float] = {}
         for t in self.trades:
@@ -254,6 +301,14 @@ class BacktestResult:
             calmar_ratio=calmar,
             max_drawdown=max_dd,
             max_drawdown_abs=max_dd_abs,
+            ulcer_index=ulcer,
+            var_95=var_95,
+            var_99=var_99,
+            cvar_95=cvar_95,
+            cvar_99=cvar_99,
+            sqn=sqn,
+            kelly=kelly,
+            exposure_pct=exposure,
             avg_trade_duration=sum(durations) / len(durations) if durations else 0,
             best_pair=best_pair,
             worst_pair=worst_pair,
@@ -263,25 +318,234 @@ class BacktestResult:
             initial_balance=initial_balance,
             final_balance=initial_balance + total_profit,
         )
+        self._apply_benchmark(self.metrics, benchmark)
 
-    def _daily_returns(self) -> List[float]:
-        """
-        Daily simple returns from the equity curve (last value per day).
-        """
+    def _daily_values(self) -> tuple:
+        """(days, last-equity-per-day) from the equity curve."""
         if not self.equity_curve:
-            return []
+            return [], []
         last_per_day: Dict[Any, float] = {}
         for dt, value in self.equity_curve:
             day = dt.date() if isinstance(dt, datetime) else dt
             last_per_day[day] = value
         days = sorted(last_per_day.keys())
-        values = [last_per_day[d] for d in days]
+        return days, [last_per_day[d] for d in days]
 
+    def _daily_returns(self) -> List[float]:
+        """
+        Daily simple returns from the equity curve (last value per day).
+        """
+        _, values = self._daily_values()
         returns = []
         for prev, cur in zip(values, values[1:]):
             if prev > 0:
                 returns.append((cur - prev) / prev)
         return returns
+
+    @staticmethod
+    def _mean(values: List[float]) -> float:
+        return sum(values) / len(values) if values else 0.0
+
+    @staticmethod
+    def _stdev(values: List[float]) -> float:
+        import math
+
+        if len(values) < 2:
+            return 0.0
+        avg = sum(values) / len(values)
+        var = sum((v - avg) ** 2 for v in values) / (len(values) - 1)
+        return math.sqrt(var) if var > 0 else 0.0
+
+    @staticmethod
+    def _quantile(sorted_vals: List[float], q: float) -> float:
+        """Linear-interpolation quantile (q in [0, 1])."""
+        if not sorted_vals:
+            return 0.0
+        pos = (len(sorted_vals) - 1) * q
+        lo = int(pos)
+        hi = min(lo + 1, len(sorted_vals) - 1)
+        frac = pos - lo
+        return sorted_vals[lo] * (1 - frac) + sorted_vals[hi] * frac
+
+    def _calc_ulcer(self) -> float:
+        """Ulcer index: RMS of mark-to-market drawdown % (lower is better)."""
+        import math
+
+        _, values = self._daily_values()
+        if len(values) < 2:
+            return 0.0
+        peak = float("-inf")
+        sq_sum = 0.0
+        n = 0
+        for v in values:
+            if v > peak:
+                peak = v
+            dd = ((peak - v) / peak * 100) if peak > 0 else 0.0
+            sq_sum += dd * dd
+            n += 1
+        return math.sqrt(sq_sum / n) if n else 0.0
+
+    def _calc_var_cvar(self, daily: List[float]) -> tuple:
+        """Daily VaR/CVaR as return decimals (negative = loss tail)."""
+        if len(daily) < 2:
+            return 0.0, 0.0, 0.0, 0.0
+        ordered = sorted(daily)
+        var_95 = self._quantile(ordered, 0.05)
+        var_99 = self._quantile(ordered, 0.01)
+        tail95 = [r for r in daily if r <= var_95]
+        tail99 = [r for r in daily if r <= var_99]
+        cvar_95 = self._mean(tail95)
+        cvar_99 = self._mean(tail99)
+        return var_95, var_99, cvar_95, cvar_99
+
+    def _calc_sqn(self, profit_pcts: List[float]) -> float:
+        """System Quality Number over per-trade returns (Van Tharp).
+
+        Uses profit_pct/100 decimals as the R-multiple proxy; documented
+        approximation (true SQN needs per-trade R).
+        """
+        import math
+
+        if len(profit_pcts) < 2:
+            return 0.0
+        dec = [p / 100 for p in profit_pcts]
+        std = self._stdev(dec)
+        if std == 0:
+            return 0.0
+        return math.sqrt(len(dec)) * self._mean(dec) / std
+
+    def _calc_kelly(self, winning: List[Any], losing: List[Any]) -> float:
+        """Kelly fraction from closed trades (uncapped, may be negative)."""
+        n = len(winning) + len(losing)
+        if n == 0:
+            return 0.0
+        win_rate = len(winning) / n
+        if not losing:
+            return win_rate  # no losers observed: stake proportionally
+        avg_win = self._mean([t.profit_abs for t in winning]) if winning else 0.0
+        avg_loss = abs(self._mean([t.profit_abs for t in losing]))
+        if avg_loss <= 0 or avg_win <= 0:
+            return 0.0
+        return win_rate - (1 - win_rate) / (avg_win / avg_loss)
+
+    def _calc_exposure(self) -> float:
+        """Time in market as % of the trade span (0-100)."""
+        spans = [
+            (t.exit_date - t.entry_date).total_seconds()
+            for t in self.trades
+            if t.entry_date and t.exit_date and t.exit_date >= t.entry_date
+        ]
+        entries = [t.entry_date for t in self.trades if t.entry_date]
+        exits = [t.exit_date for t in self.trades if t.exit_date]
+        if not spans or not entries or not exits:
+            return 0.0
+        total_span = (max(exits) - min(entries)).total_seconds()
+        if total_span <= 0:
+            return 0.0
+        return sum(spans) / total_span * 100
+
+    def _apply_risk_metrics(
+        self,
+        metrics: "BacktestMetrics",
+        daily: List[float],
+        winning: List[Any],
+        losing: List[Any],
+    ) -> None:
+        """Fill curve-based risk fields for paths without closed trades."""
+        metrics.ulcer_index = self._calc_ulcer()
+        v95, v99, c95, c99 = self._calc_var_cvar(daily)
+        metrics.var_95, metrics.var_99 = v95, v99
+        metrics.cvar_95, metrics.cvar_99 = c95, c99
+
+    @staticmethod
+    def _normalize_benchmark(benchmark: Any) -> Dict[Any, float]:
+        """Benchmark prices -> {date: close} (DataFrame/dict/Series)."""
+        import pandas as pd
+
+        if benchmark is None:
+            return {}
+        if isinstance(benchmark, dict):
+            out = {}
+            for k, v in benchmark.items():
+                try:
+                    day = pd.to_datetime(k).date()
+                    out[day] = float(v)
+                except Exception:
+                    continue
+            return out
+        try:
+            if isinstance(benchmark, pd.Series):
+                items = benchmark.items()
+                closes = True
+            else:
+                df = pd.DataFrame(benchmark)
+                cols = {str(c).lower(): c for c in df.columns}
+                date_col = cols.get("date", df.columns[0])
+                close_col = cols.get("close", df.columns[-1])
+                items = zip(
+                    pd.to_datetime(df[date_col]), df[close_col].astype(float)
+                )
+                closes = True
+            out = {}
+            for k, v in items:
+                try:
+                    out[pd.to_datetime(k).date()] = float(v)
+                except Exception:
+                    continue
+            return out
+        except Exception:
+            return {}
+
+    def _apply_benchmark(self, metrics: "BacktestMetrics", benchmark: Any) -> None:
+        """Relative metrics vs a benchmark price series (aligned daily)."""
+        bench = self._normalize_benchmark(benchmark)
+        if not bench or not self.equity_curve:
+            return
+        days, values = self._daily_values()
+        common = [d for d in days if d in bench]
+        if len(common) < 2:
+            return
+        strat_vals = [dict(zip(days, values))[d] for d in common]
+        bench_vals = [bench[d] for d in common]
+        if strat_vals[0] <= 0 or bench_vals[0] <= 0:
+            return
+        strat_rets = [
+            (c - p) / p for p, c in zip(strat_vals, strat_vals[1:]) if p > 0
+        ]
+        bench_rets = [
+            (c - p) / p for p, c in zip(bench_vals, bench_vals[1:]) if p > 0
+        ]
+        n = min(len(strat_rets), len(bench_rets))
+        if n < 1:
+            return
+        strat_rets, bench_rets = strat_rets[:n], bench_rets[:n]
+        metrics.benchmark_return_pct = (
+            (bench_vals[-1] - bench_vals[0]) / bench_vals[0] * 100
+        )
+        strat_total = (strat_vals[-1] - strat_vals[0]) / strat_vals[0] * 100
+        metrics.excess_return_pct = strat_total - metrics.benchmark_return_pct
+        excess = [s - b for s, b in zip(strat_rets, bench_rets)]
+        import math
+
+        metrics.tracking_error = self._stdev(excess) * math.sqrt(252) * 100
+        te = self._stdev(excess)
+        metrics.information_ratio = (
+            self._mean(excess) / te * math.sqrt(252) if te > 0 else 0.0
+        )
+        bench_std = self._stdev(bench_rets)
+        if bench_std > 0 and len(bench_rets) >= 2:
+            b_avg = self._mean(bench_rets)
+            cov = sum(
+                (s - self._mean(strat_rets)) * (b - b_avg)
+                for s, b in zip(strat_rets, bench_rets)
+            ) / (len(bench_rets) - 1)
+            metrics.beta = cov / (bench_std * bench_std)
+        else:
+            metrics.beta = 0.0
+        metrics.alpha = (
+            self._mean(strat_rets) * 252 * 100
+            - metrics.beta * self._mean(bench_rets) * 252 * 100
+        )
 
     def _calc_sharpe(self, profits: List[float], risk_free: float = 0.0) -> float:
         import math
@@ -452,6 +716,20 @@ class BacktestResult:
             calmar_ratio=m.get("calmar_ratio", 0),
             max_drawdown=m.get("max_drawdown", 0),
             max_drawdown_abs=m.get("max_drawdown_abs", 0),
+            ulcer_index=m.get("ulcer_index", 0),
+            var_95=m.get("var_95", 0),
+            var_99=m.get("var_99", 0),
+            cvar_95=m.get("cvar_95", 0),
+            cvar_99=m.get("cvar_99", 0),
+            sqn=m.get("sqn", 0),
+            kelly=m.get("kelly", 0),
+            exposure_pct=m.get("exposure_pct", 0),
+            benchmark_return_pct=m.get("benchmark_return_pct", 0),
+            excess_return_pct=m.get("excess_return_pct", 0),
+            tracking_error=m.get("tracking_error", 0),
+            information_ratio=m.get("information_ratio", 0),
+            beta=m.get("beta", 0),
+            alpha=m.get("alpha", 0),
             avg_trade_duration=m.get("avg_trade_duration_hours", 0),
             best_pair=m.get("best_pair", ""),
             worst_pair=m.get("worst_pair", ""),

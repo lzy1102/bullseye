@@ -843,6 +843,151 @@ class TestAshareTradingRules:
         assert len(trades) == 1
 
 
+class TestRiskMetrics:
+    """Ulcer/VaR/CVaR/SQN/Kelly/exposure math."""
+
+    def _result(self):
+        dates = pd.date_range("2024-01-01", periods=6, freq="1d")
+        # Equity: 100 -> 90 (-10% dip) -> 100 -> 110 -> 105 -> 115
+        equity = [100.0, 90.0, 100.0, 110.0, 105.0, 115.0]
+        trades = [
+            BacktestTrade(
+                pair="BTC/USDT", entry_date=dates[0], exit_date=dates[2],
+                open_rate=100.0, close_rate=100.0, amount=1.0,
+                stake_amount=100.0, profit_abs=10.0, profit_pct=10.0,
+                exit_reason="roi", trade_duration=48.0,
+            ),
+            BacktestTrade(
+                pair="BTC/USDT", entry_date=dates[2], exit_date=dates[4],
+                open_rate=100.0, close_rate=95.0, amount=1.0,
+                stake_amount=100.0, profit_abs=-5.0, profit_pct=-5.0,
+                exit_reason="stoploss", trade_duration=48.0,
+            ),
+        ]
+        result = BacktestResult(
+            strategy_name="T",
+            trades=trades,
+            equity_curve=list(zip(dates, equity)),
+        )
+        result.calculate_metrics(initial_balance=100.0)
+        return result
+
+    def test_ulcer_positive_on_dip(self):
+        m = self._result().metrics
+        assert m.ulcer_index > 0
+        # Flat curve has zero ulcer.
+        dates = pd.date_range("2024-01-01", periods=5, freq="1d")
+        flat = BacktestResult(
+            strategy_name="F",
+            equity_curve=[(d, 100.0) for d in dates],
+        )
+        flat.calculate_metrics(initial_balance=100.0)
+        assert flat.metrics.ulcer_index == pytest.approx(0.0)
+
+    def test_var_cvar_ordering(self):
+        m = self._result().metrics
+        assert m.var_99 <= m.var_95
+        assert m.cvar_95 <= m.var_95 + 1e-9
+        assert m.cvar_99 <= m.var_99 + 1e-9
+
+    def test_sqn_kelly(self):
+        m = self._result().metrics
+        # 1 win (+10), 1 loss (-5): positive expectancy, partial Kelly.
+        assert m.sqn > 0
+        assert 0 < m.kelly < 1
+
+    def test_exposure(self):
+        m = self._result().metrics
+        # In market 4 of 4 days span -> 100%.
+        assert m.exposure_pct == pytest.approx(100.0)
+        empty = BacktestResult(strategy_name="E")
+        empty.calculate_metrics(initial_balance=100.0)
+        assert empty.metrics.exposure_pct == pytest.approx(0.0)
+
+    def test_roundtrip(self, tmp_path):
+        result = self._result()
+        path = str(tmp_path / "risk.json")
+        result.save(path)
+        loaded = BacktestResult.load(path)
+        # to_dict rounds for JSON; roundtrip keeps display precision.
+        assert loaded.metrics.ulcer_index == pytest.approx(
+            result.metrics.ulcer_index, abs=0.01
+        )
+        assert loaded.metrics.beta == pytest.approx(
+            result.metrics.beta, abs=0.01
+        )
+        assert loaded.metrics.sqn == pytest.approx(
+            result.metrics.sqn, abs=0.01
+        )
+
+
+class TestBenchmark:
+    """Benchmark-relative metrics (excess/TE/IR/beta/alpha)."""
+
+    def _result(self, bench_closes):
+        dates = pd.date_range("2024-01-01", periods=5, freq="1d")
+        equity = [100.0, 110.0, 121.0, 133.1, 146.41]  # +10%/day
+        trades = [BacktestTrade(
+            pair="BTC/USDT", entry_date=dates[0], exit_date=dates[-1],
+            open_rate=100.0, close_rate=146.41, amount=1.0,
+            stake_amount=100.0, profit_abs=46.41, profit_pct=46.41,
+            exit_reason="force_exit", trade_duration=96.0,
+        )]
+        result = BacktestResult(
+            strategy_name="T", trades=trades,
+            equity_curve=list(zip(dates, equity)),
+        )
+        bench = pd.DataFrame({"date": dates, "close": bench_closes})
+        result.calculate_metrics(initial_balance=100.0, benchmark=bench)
+        return result
+
+    def test_identical_benchmark(self):
+        m = self._result([100.0, 110.0, 121.0, 133.1, 146.41]).metrics
+        assert m.beta == pytest.approx(1.0)
+        assert m.alpha == pytest.approx(0.0, abs=1e-6)
+        assert m.excess_return_pct == pytest.approx(0.0)
+        assert m.information_ratio == pytest.approx(0.0)
+
+    def test_flat_benchmark(self):
+        m = self._result([1000.0] * 5).metrics
+        assert m.benchmark_return_pct == pytest.approx(0.0)
+        assert m.excess_return_pct == pytest.approx(46.41)
+        assert m.beta == pytest.approx(0.0)
+        assert m.tracking_error > 0
+
+    def test_engine_run_with_benchmark_df(self):
+        data = make_flat_data({"BTC/USDT": 30})
+        dates = pd.date_range("2024-01-01", periods=30, freq="1h")
+        bench = pd.DataFrame({
+            "date": dates, "close": [100.0 + i * 0.1 for i in range(30)],
+        })
+        config = Config()
+        config.set("dry_run_wallet", 1000)
+        config.set("stake_amount", 100)
+        config.set("max_open_trades", 1)
+        engine = BacktestEngine(config)
+        result = engine.run(
+            strategy_class=FlatTestStrategy, pairlist=["BTC/USDT"],
+            timeframe="1h", data=data, initial_balance=1000,
+            benchmark=bench,
+        )
+        assert result.metrics.benchmark_return_pct != 0
+        assert result.config.get("benchmark") is None
+
+    def test_missing_benchmark_pair_warns(self, tmp_path):
+        config = Config()
+        config.set("datadir", str(tmp_path / "nodata"))
+        engine = BacktestEngine(config)
+        data = make_flat_data({"BTC/USDT": 30})
+        result = engine.run(
+            strategy_class=FlatTestStrategy, pairlist=["BTC/USDT"],
+            timeframe="1h", data=data, initial_balance=1000,
+            benchmark="000300.SH",
+        )
+        assert result.metrics.beta == pytest.approx(0.0)
+        assert result.metrics.benchmark_return_pct == pytest.approx(0.0)
+
+
 class TestStockDownloadHelpers:
     """KlineData -> OHLCV conversion and stock download wiring."""
 
