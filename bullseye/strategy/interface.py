@@ -587,6 +587,89 @@ def stoploss_from_absolute(
 
 # ==================== Hyperoptable Parameters ====================
 
+class _BoundParameter:
+    """Per-instance view of a hyperoptable parameter (Freqtrade-compatible).
+
+    `strategy.buy_rsi` returns this view (not the raw value) so both
+    access styles work:
+    - Freqtrade style: `self.buy_rsi.value`
+    - Direct style: `dataframe["close"] > self.buy_rsi`
+
+    Numeric/bool dunders delegate to the stored per-instance value, so
+    comparisons and arithmetic behave like the raw value.
+    """
+
+    __slots__ = ("_descriptor", "_obj")
+
+    def __init__(self, descriptor: "_ParameterBase", obj: Any):
+        object.__setattr__(self, "_descriptor", descriptor)
+        object.__setattr__(self, "_obj", obj)
+
+    @property
+    def value(self):
+        return self._descriptor._get_instance_value(self._obj)
+
+    @value.setter
+    def value(self, new_value):
+        self._descriptor._set_instance_value(self._obj, new_value)
+
+    def _raw(self):
+        return self.value
+
+    def __eq__(self, other):
+        other = other.value if isinstance(other, _BoundParameter) else other
+        return self._raw() == other
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __lt__(self, other):
+        other = other.value if isinstance(other, _BoundParameter) else other
+        return self._raw() < other
+
+    def __le__(self, other):
+        other = other.value if isinstance(other, _BoundParameter) else other
+        return self._raw() <= other
+
+    def __gt__(self, other):
+        other = other.value if isinstance(other, _BoundParameter) else other
+        return self._raw() > other
+
+    def __ge__(self, other):
+        other = other.value if isinstance(other, _BoundParameter) else other
+        return self._raw() >= other
+
+    def __bool__(self):
+        return bool(self._raw())
+
+    def __int__(self):
+        return int(self._raw())
+
+    def __float__(self):
+        return float(self._raw())
+
+    def __add__(self, other):
+        other = other.value if isinstance(other, _BoundParameter) else other
+        return self._raw() + other
+
+    def __radd__(self, other):
+        return self.__add__(other)
+
+    def __sub__(self, other):
+        other = other.value if isinstance(other, _BoundParameter) else other
+        return self._raw() - other
+
+    def __mul__(self, other):
+        other = other.value if isinstance(other, _BoundParameter) else other
+        return self._raw() * other
+
+    def __hash__(self):
+        return hash((self._descriptor._storage_key(), id(self._obj)))
+
+    def __repr__(self):
+        return f"{self._raw()!r}"
+
+
 class _ParameterBase:
     """Shared per-instance storage for hyperoptable parameters.
 
@@ -595,6 +678,9 @@ class _ParameterBase:
     instance. Values are now stored in `obj.__dict__` keyed by attribute
     name (captured via `__set_name__`); the descriptor-level `.value`
     remains as the class default for backwards compatibility.
+
+    Instance attribute access returns a `_BoundParameter` view supporting
+    both `self.x.value` (Freqtrade style) and direct comparison/arithmetic.
     """
 
     _attr_name: Optional[str] = None
@@ -610,6 +696,11 @@ class _ParameterBase:
 
     def _set_instance_value(self, obj, value):
         obj.__dict__[self._storage_key()] = value
+
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self
+        return _BoundParameter(self, obj)
 
 
 class BooleanParameter(_ParameterBase):
@@ -627,11 +718,6 @@ class BooleanParameter(_ParameterBase):
         self.space = space
         self.optimize = optimize
         self.load = load
-
-    def __get__(self, obj, objtype=None):
-        if obj is None:
-            return self
-        return self._get_instance_value(obj)
 
     def __set__(self, obj, value):
         self._set_instance_value(obj, value)
@@ -667,11 +753,6 @@ class IntParameter(_ParameterBase):
         self.optimize = optimize
         self.load = load
 
-    def __get__(self, obj, objtype=None):
-        if obj is None:
-            return self
-        return self._get_instance_value(obj)
-
     def __set__(self, obj, value):
         self._set_instance_value(obj, value)
         try:
@@ -705,11 +786,6 @@ class DecimalParameter(_ParameterBase):
         self.space = space
         self.optimize = optimize
         self.load = load
-
-    def __get__(self, obj, objtype=None):
-        if obj is None:
-            return self
-        return self._get_instance_value(obj)
 
     def __set__(self, obj, value):
         self._set_instance_value(obj, value)
@@ -751,11 +827,6 @@ class CategoricalParameter(_ParameterBase):
         self.space = space
         self.optimize = optimize
         self.load = load
-
-    def __get__(self, obj, objtype=None):
-        if obj is None:
-            return self
-        return self._get_instance_value(obj)
 
     def __set__(self, obj, value):
         self._set_instance_value(obj, value)
