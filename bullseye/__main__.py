@@ -182,6 +182,9 @@ def backtesting(ctx, strategy: str, timeframe: str, timerange: Optional[str],
     """
     Run backtesting
 
+    A sibling {Strategy}.json next to the strategy file is applied
+    automatically when present.
+
     Examples:
         bullseye backtesting --strategy MyStrategy
         bullseye backtesting --strategy MyStrategy --timerange 20240101-20241231
@@ -363,8 +366,6 @@ def download_data_cmd(ctx, exchange: Optional[str], market: str, datafeed: Optio
               help='Holdout range for out-of-sample validation (e.g. 20240701-20241231)')
 @click.option('--walk-forward', type=int, default=0,
               help='Walk-forward splits (>=2: re-optimize per expanding window)')
-@click.option('--params-file', type=str, default=None,
-              help='Freqtrade hyperopt params JSON: applies tuned roi/stoploss/trailing and defaults for non-searched params')
 @click.option('--export', type=str, help='Export results to JSON file')
 @click.option('--random-state', type=int, help='Random seed for reproducibility')
 @click.pass_context
@@ -375,7 +376,6 @@ def hyperopt(ctx, strategy: str, epochs: int, spaces: str,
              max_open_trades: Optional[int], fee: float,
              slippage: Optional[float], jobs: int, optimizer: str,
              validation_timerange: Optional[str], walk_forward: int,
-             params_file: Optional[str],
              export: Optional[str], random_state: Optional[int]):
     """
     Run hyperparameter optimization
@@ -387,7 +387,6 @@ def hyperopt(ctx, strategy: str, epochs: int, spaces: str,
         bullseye hyperopt --strategy MyStrategy --min-trades 20 --timerange 20240101-20240630 --validation-timerange 20240701-20241231
         bullseye hyperopt --strategy MyStrategy --optimizer optuna --epochs 100 --jobs 4
         bullseye hyperopt --strategy MyStrategy --epochs 30 --walk-forward 3
-        bullseye hyperopt --strategy MyStrategy --epochs 100 --params-file user_data/strategies/MyStrategy.json
     """
     console.print("[bold green]Running hyperopt...[/bold green]")
     console.print(f"[blue]Strategy:[/blue] {strategy}")
@@ -427,7 +426,6 @@ def hyperopt(ctx, strategy: str, epochs: int, spaces: str,
             optimizer=optimizer,
             validation_timerange=validation_timerange,
             walk_forward=walk_forward,
-            params_file=params_file,
             min_trades=min_trades,
             stake_amount=stake_amount,
             max_open_trades=max_open_trades,

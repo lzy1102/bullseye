@@ -480,3 +480,73 @@ class TestParamsFile:
 
         saved = json.loads((tmp_path / "h.json").read_text())
         assert saved["params_file"].endswith("params.json")
+
+
+class TestParamsFileDiscovery:
+    """Sibling {Strategy}.json auto-discovery."""
+
+    def _write_strategy(self, tmp_path, name="AutoStrat"):
+        import textwrap
+
+        strat_dir = tmp_path / "auto_strats"
+        strat_dir.mkdir(exist_ok=True)
+        (strat_dir / f"{name}.py").write_text(textwrap.dedent(f"""\
+            from bullseye.strategy.interface import IStrategy
+
+            class {name}(IStrategy):
+                timeframe = "1h"
+                startup_candle_count = 2
+                minimal_roi = {{"0": 100.0}}
+
+                def populate_indicators(self, dataframe, metadata):
+                    return dataframe
+
+                def populate_entry_trend(self, dataframe, metadata):
+                    dataframe["enter_long"] = 1
+                    return dataframe
+
+                def populate_exit_trend(self, dataframe, metadata):
+                    dataframe["exit_long"] = 0
+                    return dataframe
+            """), encoding="utf-8")
+        return strat_dir
+
+    def test_find_default(self, tmp_path):
+        import json as _json
+        from bullseye.optimize.hyperopt import find_default_params_file
+
+        strat_dir = self._write_strategy(tmp_path)
+        assert find_default_params_file(strategy_path=str(strat_dir),
+                                        strategy_name="Nope") is None
+        (strat_dir / "AutoStrat.json").write_text(
+            _json.dumps({"params": {"buy": {}}}), encoding="utf-8")
+        found = find_default_params_file(strategy_path=str(strat_dir),
+                                         strategy_name="AutoStrat")
+        assert found is not None and found.endswith("AutoStrat.json")
+
+    def test_hyperopt_auto_applies(self, tmp_path):
+        import json as _json
+        import pandas as pd
+        from datetime import datetime
+        from bullseye.configuration.config import Config
+
+        strat_dir = self._write_strategy(tmp_path)
+        (strat_dir / "AutoStrat.json").write_text(_json.dumps({
+            "params": {"roi": {"0": 0.0}},
+        }), encoding="utf-8")
+        dates = pd.date_range(start=datetime(2024, 1, 1), periods=30,
+                              freq="1h")
+        data = {"BTC/USDT": pd.DataFrame({
+            "date": dates, "open": 100.0, "high": 100.0, "low": 100.0,
+            "close": 100.0, "volume": [1000.0] * 30,
+        })}
+        cfg = Config()
+        cfg.set("strategy_path", str(strat_dir))
+        cfg.set("dry_run_wallet", 10000)
+        cfg.set("stake_amount", 100)
+        cfg.set("max_open_trades", 1)
+        eng = HyperoptEngine(cfg)
+        eng.run(strategy_name="AutoStrat", pairlist=["BTC/USDT"],
+                timeframe="1h", epochs=2, min_trades=1,
+                initial_balance=10000, data=data, random_state=1)
+        assert (eng._params_file or "").endswith("AutoStrat.json")

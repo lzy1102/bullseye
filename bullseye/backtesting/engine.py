@@ -354,6 +354,7 @@ class BacktestEngine:
         slippage: Optional[float] = None,
             dividends: Optional[Dict[str, Any]] = None,
         benchmark: Optional[Any] = None,
+        params_file: Optional[str] = None,
     ) -> BacktestResult:
         """
         Run backtesting.
@@ -381,6 +382,10 @@ class BacktestEngine:
                 from disk (same timeframe/timerange, e.g. "000300.SH"), an
                 OHLCV DataFrame with date/close, or a {date: close} dict.
                 Missing files warn and continue without relative metrics.
+            params_file: Freqtrade hyperopt params JSON applied onto the
+                strategy (roi/stoploss/trailing + Parameter defaults).
+                None (default) auto-discovers the sibling `{Strategy}.json`;
+                pass "" to disable.
 
         Returns:
             BacktestResult with trades and metrics
@@ -399,6 +404,35 @@ class BacktestEngine:
                 strategy = self._load_strategy(strategy_name)
             else:
                 raise BacktestError("No strategy specified. Provide strategy_class or strategy_name.")
+
+        # Params file: explicit path wins; empty string disables; otherwise
+        # auto-discover the sibling {Strategy}.json (deferred import: the
+        # optimize package depends on this engine).
+        if params_file is None:
+            from bullseye.optimize.hyperopt import find_default_params_file
+
+            auto = find_default_params_file(
+                strategy_class=strategy.__class__,
+                strategy_name=(strategy_name
+                               if isinstance(strategy_name, str) else None),
+                strategy_path=self._config.strategy_path,
+            )
+            if auto:
+                logger.info(f"Auto-using params file: {auto}")
+                params_file = auto
+        if params_file:
+            from bullseye.optimize.hyperopt import (
+                apply_params_file,
+                load_params_file,
+            )
+
+            counts = apply_params_file(
+                strategy.__class__, load_params_file(params_file)
+            )
+            logger.info(
+                f"Params file {params_file}: applied "
+                f"{counts['applied']}, skipped {counts['skipped']}"
+            )
 
         # Apply config overrides
         pairlist = pairlist or self._get_pairlist()

@@ -268,6 +268,41 @@ def _get_optimizable_params(
     return params
 
 
+def find_default_params_file(
+    strategy_class: Any = None,
+    strategy_name: Optional[str] = None,
+    strategy_path: Optional[str] = None,
+) -> Optional[str]:
+    """Locate the conventional sibling params file, if any.
+
+    Convention: `{strategy_path}/{StrategyName}.json` next to the strategy
+    source (or next to the class's source file). Returns the path when the
+    file exists, else None. Never raises.
+    """
+    import inspect
+    from pathlib import Path as _Path
+
+    candidates = []
+    if strategy_class is not None:
+        cls = strategy_class if isinstance(strategy_class, type) else type(strategy_class)
+        try:
+            src = inspect.getsourcefile(cls)
+            if src:
+                p = _Path(src)
+                candidates.append(p.with_name(p.stem + ".json"))
+        except (TypeError, OSError):
+            pass
+    if strategy_name and strategy_path:
+        candidates.append(_Path(strategy_path) / f"{strategy_name}.json")
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
 def load_params_file(path: str) -> Dict[str, Any]:
     """Load a Freqtrade hyperopt params file (ft_stratparam_v).
 
@@ -610,9 +645,11 @@ class HyperoptEngine:
             params_file: Freqtrade hyperopt params JSON (ft_stratparam_v).
                 buy/sell values become the Parameter defaults and
                 roi/stoploss/trailing sections override the strategy before
-                sampling. Note this orients (not centers) the search:
-                sampled dimensions still explore their full ranges; the
-                file values govern non-searched params and the
+                sampling. None (default) auto-discovers the sibling
+                `{Strategy}.json` next to the strategy file; pass "" to
+                disable auto-discovery. Note this orients (not centers) the
+                search: sampled dimensions still explore their full ranges;
+                the file values govern non-searched params and the
                 roi/stoploss/trailing setup.
 
         Returns:
@@ -666,8 +703,20 @@ class HyperoptEngine:
             logger.warning(f"Unknown loss function '{loss_function}', using default")
         loss_fn = loss_cls.calculate
 
-        # Params file: previous tuning becomes the default center.
+        # Params file: explicit path wins; empty string disables;
+        # otherwise auto-discover the sibling {Strategy}.json so a
+        # shipped tuning applies by default (loudly logged).
         self._params_file = params_file
+        if params_file is None:
+            auto = find_default_params_file(
+                strategy_class=strategy_class,
+                strategy_name=strategy_name,
+                strategy_path=self._config.strategy_path,
+            )
+            if auto:
+                logger.info(f"Auto-using params file: {auto}")
+                params_file = auto
+                self._params_file = auto
         if params_file:
             file_params = load_params_file(params_file)
             counts = apply_params_file(strategy_class, file_params)
@@ -718,6 +767,8 @@ class HyperoptEngine:
             fee=fee,
             slippage=slippage,
             data=data,
+            # Forward the raw flag (None/"" decides auto/disabled per run).
+            params_file=params_file,
         )
 
         # Walk-forward mode: rolling re-optimization per expanding window.

@@ -1407,3 +1407,71 @@ class TestTuShareDividends:
         from bullseye.data.datafeed.base import BaseDatafeed
 
         assert BaseDatafeed.get_dividends(object(), "000001.SZ") == []
+
+
+class TestBacktestParamsAutoDiscovery:
+    """Backtests auto-apply a sibling {Strategy}.json unless disabled."""
+
+    def _write_strategy(self, tmp_path, dirname="bt_strats"):
+        import textwrap
+
+        strat_dir = tmp_path / dirname
+        strat_dir.mkdir(exist_ok=True)
+        (strat_dir / "JsonStrat.py").write_text(textwrap.dedent("""\
+            from bullseye.strategy.interface import IStrategy
+
+            class JsonStrat(IStrategy):
+                timeframe = "1h"
+                startup_candle_count = 2
+                minimal_roi = {"0": 100.0}
+
+                def populate_indicators(self, dataframe, metadata):
+                    return dataframe
+
+                def populate_entry_trend(self, dataframe, metadata):
+                    dataframe["enter_long"] = 1
+                    return dataframe
+
+                def populate_exit_trend(self, dataframe, metadata):
+                    dataframe["exit_long"] = 0
+                    return dataframe
+            """), encoding="utf-8")
+        return strat_dir
+
+    def _run(self, tmp_path, dirname="bt_strats", **kwargs):
+        import json as _json
+
+        strat_dir = self._write_strategy(tmp_path, dirname)
+        (strat_dir / "JsonStrat.json").write_text(_json.dumps({
+            "params": {"roi": {"0": 0.0}},
+        }), encoding="utf-8")
+        config = Config()
+        config.set("strategy_path", str(strat_dir))
+        config.set("dry_run_wallet", 10000)
+        config.set("stake_amount", 100)
+        config.set("max_open_trades", 1)
+        engine = BacktestEngine(config)
+        # Rising prices: net profit stays positive so roi 0.0 exits
+        # every candle (fee-aware ROI would never fire on flat data).
+        prices = [100.0 + i for i in range(30)]
+        data = {"BTC/USDT": pd.DataFrame({
+            "date": pd.date_range("2024-01-01", periods=30, freq="1h"),
+            "open": prices, "high": [p + 0.5 for p in prices],
+            "low": [p - 0.5 for p in prices], "close": prices,
+            "volume": [1000.0] * 30,
+        })}
+        return engine.run(
+            strategy_name="JsonStrat", pairlist=["BTC/USDT"],
+            timeframe="1h", data=data, initial_balance=10000, **kwargs,
+        )
+
+    def test_sibling_json_applied(self, tmp_path):
+        result = self._run(tmp_path)
+        # json roi 0.0 exits on the first candle: many quick round-trips.
+        assert result.metrics.total_trades > 1
+
+    def test_empty_string_disables(self, tmp_path):
+        result = self._run(tmp_path, dirname="bt_strats_b", params_file="")
+        # class default roi 100.0 never reached: single forced exit.
+        assert result.metrics.total_trades == 1
+        assert result.trades[0].exit_reason == "force_exit"
