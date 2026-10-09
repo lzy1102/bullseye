@@ -98,16 +98,18 @@ class TrendGridTradingStrategySpot(IStrategy):
             dataframe[f'ma_{period}d'] = ta.SMA(dataframe['close'], timeperiod=period)
 
         gap = float(self.min_gap_ratio.value)
-        # ========== 3. 多头排列 + 强度判断（去 ma5：10/20/30 三线） ==========
+        # ========== 3. 多头排列 + 强度判断（ma5/10/20/30） ==========
         ma_aligned = (
-            (dataframe['ma_10d'] > dataframe['ma_20d'] * (1 + gap))
+            (dataframe['ma_5d'] > dataframe['ma_10d'] * (1 + gap))
+            & (dataframe['ma_10d'] > dataframe['ma_20d'] * (1 + gap))
             & (dataframe['ma_20d'] > dataframe['ma_30d'] * (1 + gap))
         )
         dataframe['trend'] = 0
         dataframe.loc[ma_aligned, 'trend'] = 1
         # ========== 4. 空头排列 + 强度判断 ==========
         bear_aligned = (
-            (dataframe['ma_10d'] < dataframe['ma_20d'] * (1 - gap))
+            (dataframe['ma_5d'] < dataframe['ma_10d'] * (1 - gap))
+            & (dataframe['ma_10d'] < dataframe['ma_20d'] * (1 - gap))
             & (dataframe['ma_20d'] < dataframe['ma_30d'] * (1 - gap))
         )
         dataframe.loc[bear_aligned, 'trend'] = -1
@@ -138,8 +140,9 @@ class TrendGridTradingStrategySpot(IStrategy):
             # ========== 2. 趋势强度参数 ==========
             # 核心：设置最小间距阈值（避免粘连）
         # 可根据市场调整：加密货币0.2%-0.5%，外汇0.05%-0.2%
-        # ========== 3. 多头排列 + 强度判断（去 ma5：10/20 两线） ==========
+        # ========== 3. 多头排列 + 强度判断（ma5/10/20） ==========
         ma_aligned = (
+                (dataframe['mam_5'] > dataframe['mam_10'] * (1 + self.min_gap_ratio.value)) &
                 (dataframe['mam_10'] > dataframe['mam_20'] * (1 + self.min_gap_ratio.value))
                 # (dataframe['ma_20'] > dataframe['ma_30'] * (1 + self.min_gap_ratio.value))
         )
@@ -148,6 +151,7 @@ class TrendGridTradingStrategySpot(IStrategy):
         # ========== 5. 空头趋势判断（对称逻辑） ==========
         # ========== 4. 空头排列 + 强度判断 ==========
         bear_aligned = (
+                (dataframe['mam_5'] < dataframe['mam_10'] * (1 - self.min_gap_ratio.value)) &
                 (dataframe['mam_10'] < dataframe['mam_20'] * (1 - self.min_gap_ratio.value))
                 # (dataframe['ma_20'] < dataframe['ma_30'] * (1 - self.min_gap_ratio.value))
         )
