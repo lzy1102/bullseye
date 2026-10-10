@@ -24,18 +24,6 @@ class BaseSpot(IStrategy):
 
     position_adjustment_enable = False
 
-    # Bollinger early-exit parameters (exit leg only).
-    boll_period: int = 20
-    boll_std: float = 2.0
-
-    def _boll_on(self) -> bool:
-        # Kill-switch for the experiment: set use_boll_exit: false
-        # in the config to run the pre-Bollinger baseline.
-        cfg = getattr(self, "config", None)
-        if isinstance(cfg, dict):
-            return bool(cfg.get("use_boll_exit", True))
-        return True
-
     @informative("1d")
     def populate_indicators_1d(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         dataframe["ma20d"] = dataframe["close"].rolling(20).mean()
@@ -46,9 +34,6 @@ class BaseSpot(IStrategy):
         return dataframe
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        mid = dataframe["close"].rolling(self.boll_period).mean()
-        sd = dataframe["close"].rolling(self.boll_period).std()
-        dataframe["bb_lower"] = mid - self.boll_std * sd
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
@@ -85,13 +70,6 @@ class BaseSpot(IStrategy):
             return None
         if "trend_1d" not in dataframe:
             return None
-        last = dataframe.iloc[-1]
-        if last["trend_1d"] == -1:
+        if dataframe["trend_1d"].iloc[-1] == -1:
             return "trend_bear"
-        if (
-            self._boll_on()
-            and "bb_lower" in dataframe
-            and last["close"] < last["bb_lower"]
-        ):
-            return "boll_dead"
         return None
