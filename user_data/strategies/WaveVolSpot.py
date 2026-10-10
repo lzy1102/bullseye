@@ -55,8 +55,7 @@ class WaveVolSpot(IStrategy):
     # two after the actual cross, so the marking bar must not demand it.
     vol_mult: float = 1.2
     vol_window: int = 20
-    # Pullback entry band above H and max bars to wait after breakout.
-    pullback_tol: float = 0.03
+    # Max bars to wait for the retest after the breakout bar.
     max_wait: int = 15
 
     def _wave_frame(self, dataframe: DataFrame) -> DataFrame:
@@ -181,20 +180,20 @@ class WaveVolSpot(IStrategy):
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         gate = (dataframe["ma20"] > dataframe["ma60"]).fillna(False)
-        # Phase-2 pullback: back near the FROZEN breakout level within
-        # max_wait bars, gate still up, wave-1 low intact.
-        in_band = (
-            (dataframe["close"] >= dataframe["bo_H"] * 0.995)
-            & (dataframe["close"] <= dataframe["bo_H"] * (1 + self.pullback_tol))
-        )
-        not_invalid = dataframe["close"] > dataframe["bo_Lprev"]
+        # Phase-2 pullback: the level must be TESTED and HELD on the same
+        # bar (wick down to bo_H, close back above it, up-day). Buying any
+        # bar merely passing through the band catches breakdowns mid-fall.
+        touched = dataframe["low"] <= dataframe["bo_H"] * 1.005
+        held = dataframe["close"] >= dataframe["bo_H"]
+        up_day = dataframe["close"] > dataframe["open"]
         dataframe.loc[
             (
                 gate
                 & (dataframe["bo_age"] >= 1)
                 & (dataframe["bo_age"] <= self.max_wait)
-                & in_band.fillna(False)
-                & not_invalid.fillna(False)
+                & touched.fillna(False)
+                & held.fillna(False)
+                & up_day.fillna(False)
                 & (dataframe["volume"] > 0)
             ),
             ["enter_long", "enter_tag"],
