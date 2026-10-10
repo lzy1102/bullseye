@@ -1022,6 +1022,9 @@ class TestGridAdjust:
         # Averaged down across several tranches (more than one lot).
         assert first.amount > 300
         assert first.stake_amount > 12000
+        # Entry count recorded (1 initial + DCA adds).
+        assert first.entries > 1
+        assert all(t.entries >= 1 for t in result.trades)
         # Average cost below the initial ~40 fill.
         assert first.open_rate < 40.0
         # No losing signal exits (force_exit at data end excepted).
