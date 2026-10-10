@@ -150,9 +150,10 @@ class WaveVolSpot(IStrategy):
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         gate = dataframe["ma20"] > dataframe["ma60"]
-        breakout = (dataframe["close"] > dataframe["wave_H"]) & (
-            dataframe["close"].shift(1) <= dataframe["wave_H"].shift(1)
-        ).fillna(False)
+        # Above the wave-1 high (no fresh-cross requirement: in real
+        # trends price never dips back below the last pivot high, so a
+        # fresh-cross filter only catches recoveries and misses the leg).
+        above_h = dataframe["close"] > dataframe["wave_H"]
         vol_ok = (
             (dataframe["vol_ratio"] > self.vol_mult)
             & (dataframe["close"] > dataframe["open"])
@@ -162,7 +163,7 @@ class WaveVolSpot(IStrategy):
             (
                 gate.fillna(False)
                 & dataframe["wave_ok"]
-                & breakout
+                & above_h.fillna(False)
                 & vol_ok
             ),
             ["enter_long", "enter_tag"],
