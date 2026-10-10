@@ -27,6 +27,10 @@ class TrendFollowSpot(IStrategy):
 
     position_adjustment_enable = False
 
+    # Bollinger early-exit parameters (exit leg only).
+    boll_period: int = 20
+    boll_std: float = 2.0
+
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         dataframe["mam_10"] = dataframe["close"].rolling(10).mean()
         dataframe["mam_20"] = dataframe["close"].rolling(20).mean()
@@ -36,6 +40,9 @@ class TrendFollowSpot(IStrategy):
         dataframe["trend"] = 0
         dataframe.loc[bull, "trend"] = 1
         dataframe.loc[bear, "trend"] = -1
+        mid = dataframe["close"].rolling(self.boll_period).mean()
+        sd = dataframe["close"].rolling(self.boll_period).std()
+        dataframe["bb_lower"] = mid - self.boll_std * sd
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
@@ -66,6 +73,9 @@ class TrendFollowSpot(IStrategy):
         dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
         if dataframe is None or dataframe.empty:
             return None
-        if dataframe["trend"].iloc[-1] == -1:
+        last = dataframe.iloc[-1]
+        if last["trend"] == -1:
             return "trend_reversed"
+        if "bb_lower" in dataframe and last["close"] < last["bb_lower"]:
+            return "boll_dead"
         return None

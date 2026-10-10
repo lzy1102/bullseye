@@ -41,6 +41,10 @@ class BankMACross(IStrategy):
     fast_period = IntParameter(5, 20, default=12, space="buy", optimize=True)
     slow_period = IntParameter(20, 60, default=26, space="buy", optimize=True)
 
+    # Bollinger early-exit parameters (exit leg only).
+    boll_period: int = 20
+    boll_std: float = 2.0
+
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         fast = _int(self.fast_period)
         slow = _int(self.slow_period)
@@ -52,6 +56,9 @@ class BankMACross(IStrategy):
         dataframe["ema_slow"] = (
             dataframe["close"].ewm(span=slow, adjust=False).mean()
         )
+        mid = dataframe["close"].rolling(self.boll_period).mean()
+        sd = dataframe["close"].rolling(self.boll_period).std()
+        dataframe["bb_lower"] = mid - self.boll_std * sd
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
@@ -66,6 +73,13 @@ class BankMACross(IStrategy):
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        dataframe.loc[
+            (
+                (dataframe["close"] < dataframe["bb_lower"])
+                & (dataframe["volume"] > 0)
+            ),
+            ["exit_long", "exit_tag"],
+        ] = (1, "boll_dead")
         dataframe.loc[
             (
                 (dataframe["ema_fast"] < dataframe["ema_slow"])

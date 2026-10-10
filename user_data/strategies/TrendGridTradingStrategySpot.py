@@ -70,6 +70,10 @@ class TrendGridTradingStrategySpot(IStrategy):
     max_loss_pct = DecimalParameter(-0.05, -0.005, default=-0.05, space="buy", optimize=True)
     can_short = False
 
+    # Bollinger early-exit parameters (exit leg only, 30m frame).
+    boll_period: int = 20
+    boll_std: float = 2.0
+
     # custom_exit = True
     use_custom_stoploss = False
 
@@ -129,6 +133,10 @@ class TrendGridTradingStrategySpot(IStrategy):
         dataframe['atr'] = ta.ATR(
             dataframe['high'], dataframe['low'], dataframe['close'],
             timeperiod=14)
+
+        bb_mid = dataframe['close'].rolling(self.boll_period).mean()
+        bb_sd = dataframe['close'].rolling(self.boll_period).std()
+        dataframe['bb_lower'] = bb_mid - self.boll_std * bb_sd
 
            # ========== 1. 基础MA计算 ==========
         for period in [5, 10,20]:
@@ -232,10 +240,16 @@ class TrendGridTradingStrategySpot(IStrategy):
         if pd.isna(sma_current) or pd.isna(trend_1d_current):
             return None
 
-        # ========== 2. 趋势反转强制平仓（唯一出口，不看盈亏） ==========
+        # ========== 2. 趋势反转强制平仓（不看盈亏） ==========
         if trend_1d_current < 0:
             logger.info(f"{pair} {current_time} 趋势转空，强制平仓（{current_profit:.2%}）")
             return "trend_reversed_short"
+
+        # ========== 3. 布林下轨提前离场（动量死亡，不等日线确认） ==========
+        if ('bb_lower' in dataframe and 'close' in dataframe
+                and dataframe['close'].iloc[-1] < dataframe['bb_lower'].iloc[-1]):
+            logger.info(f"{pair} {current_time} 跌破布林下轨，提前离场（{current_profit:.2%}）")
+            return "boll_dead"
 
         return None
 

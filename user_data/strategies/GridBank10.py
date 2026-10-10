@@ -50,6 +50,12 @@ class GridBank10(IStrategy):
 
     max_tranches: int = 5
     dip_step: float = 0.05
+
+    # Bollinger early-exit parameters (exit leg only). Note: this breaks
+    # the "never sell red" premise - a grid can be cut below cost when
+    # momentum dies. Kept as an experiment variant.
+    boll_period: int = 20
+    boll_std: float = 2.0
     # Per-tranche stake. <= 0 means AUTO: total equity / max_tranches,
     # so position sizing follows the account with no manual tuning.
     tranche_stake: float = 0.0
@@ -99,6 +105,9 @@ class GridBank10(IStrategy):
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         dataframe["ma20"] = dataframe["close"].rolling(20).mean()
         dataframe["ma60"] = dataframe["close"].rolling(60).mean()
+        mid = dataframe["close"].rolling(self.boll_period).mean()
+        sd = dataframe["close"].rolling(self.boll_period).std()
+        dataframe["bb_lower"] = mid - self.boll_std * sd
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
@@ -153,6 +162,30 @@ class GridBank10(IStrategy):
         if pair not in self._last_buy:
             # Record the initial fill for the dip ladder.
             self._last_buy[pair] = trade.open_rate
+        return None
+
+    def custom_exit(
+        self,
+        pair: str,
+        trade,
+        current_time,
+        current_rate: float,
+        current_profit: float,
+        **kwargs,
+    ) -> Optional[str]:
+        # Bollinger early-exit experiment: cut the grid when momentum
+        # dies, even below cost (breaks "never sell red" on purpose).
+        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+        if dataframe is None or dataframe.empty:
+            return None
+        if "bb_lower" not in dataframe:
+            return None
+        last = dataframe.iloc[-1]
+        if last["close"] < last["bb_lower"]:
+            self._adds.pop(pair, None)
+            self._last_buy.pop(pair, None)
+            self._open_trade_id.pop(pair, None)
+            return "boll_dead"
         return None
 
 
