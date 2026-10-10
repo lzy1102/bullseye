@@ -7,8 +7,13 @@ turns bear. No DCA, no ROI, no stoploss: the daily gate is the only
 risk control. Intended to run alongside TSatSpot (satellite T leg);
 blend 70% base / 30% satellite by return.
 """
-from bullseye.strategy import IStrategy, informative
+from bullseye.strategy import IntParameter, IStrategy, informative
 from pandas import DataFrame
+
+
+def _int(value) -> int:
+    """Unwrap hyperopt parameters on old and new engines."""
+    return int(getattr(value, "value", value))
 
 
 class BaseSpot(IStrategy):
@@ -24,10 +29,17 @@ class BaseSpot(IStrategy):
 
     position_adjustment_enable = False
 
+    gate_fast = IntParameter(5, 30, default=20, space="buy", optimize=True)
+    gate_slow = IntParameter(30, 120, default=60, space="buy", optimize=True)
+
     @informative("1d")
     def populate_indicators_1d(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        dataframe["ma20d"] = dataframe["close"].rolling(20).mean()
-        dataframe["ma60d"] = dataframe["close"].rolling(60).mean()
+        fast = _int(self.gate_fast)
+        slow = _int(self.gate_slow)
+        if slow <= fast:
+            slow = fast + 1
+        dataframe["ma20d"] = dataframe["close"].rolling(fast).mean()
+        dataframe["ma60d"] = dataframe["close"].rolling(slow).mean()
         dataframe["trend"] = 0
         dataframe.loc[dataframe["ma20d"] > dataframe["ma60d"], "trend"] = 1
         dataframe.loc[dataframe["ma20d"] < dataframe["ma60d"], "trend"] = -1

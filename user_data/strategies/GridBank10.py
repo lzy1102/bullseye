@@ -19,8 +19,18 @@ at the traded price (A-share lot rule), e.g. 12000 for a ~40 CNY stock.
 """
 from typing import Dict, Optional
 
-from bullseye.strategy import IStrategy
+from bullseye.strategy import DecimalParameter, IntParameter, IStrategy
 from pandas import DataFrame
+
+
+def _int(value) -> int:
+    """Unwrap hyperopt parameters on old and new engines."""
+    return int(getattr(value, "value", value))
+
+
+def _float(value) -> float:
+    """Unwrap hyperopt parameters on old and new engines."""
+    return float(getattr(value, "value", value))
 
 
 class GridBank10(IStrategy):
@@ -48,8 +58,16 @@ class GridBank10(IStrategy):
 
     position_adjustment_enable = True
 
-    max_tranches: int = 5
-    dip_step: float = 0.05
+    max_tranches = IntParameter(3, 8, default=5, space="buy", optimize=True)
+    dip_step = DecimalParameter(0.03, 0.10, default=0.05, space="buy",
+                                optimize=True)
+    # Trailing-stop tuning knobs. The engine reads the plain
+    # trailing_stop_positive/_offset attributes, so populate_indicators
+    # syncs them from these parameters every run (see below).
+    trail_pos = DecimalParameter(0.01, 0.06, default=0.03, space="buy",
+                                 optimize=True)
+    trail_offset = DecimalParameter(0.03, 0.10, default=0.05, space="buy",
+                                    optimize=True)
     # Per-tranche stake. <= 0 means AUTO: total equity / max_tranches,
     # so position sizing follows the account with no manual tuning.
     tranche_stake: float = 0.0
@@ -74,7 +92,7 @@ class GridBank10(IStrategy):
             total = 0.0
         if total <= 0:
             return 0.0
-        return total / max(1, int(self.max_tranches))
+        return total / max(1, _int(self.max_tranches))
 
     def custom_stake_amount(
         self,
@@ -97,6 +115,11 @@ class GridBank10(IStrategy):
         return None  # fall back to engine/config stake
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        # Sync hyperopt-tuned knobs into the plain attributes the engine
+        # reads directly (trailing_stop_positive/_offset must stay floats;
+        # a Parameter object would break the engine's arithmetic).
+        self.trailing_stop_positive = _float(self.trail_pos)
+        self.trailing_stop_positive_offset = _float(self.trail_offset)
         dataframe["ma20"] = dataframe["close"].rolling(20).mean()
         dataframe["ma60"] = dataframe["close"].rolling(60).mean()
         return dataframe
@@ -136,10 +159,10 @@ class GridBank10(IStrategy):
     ) -> Optional[float]:
         pair = trade.pair
         self._reset_if_new_trade(pair, trade.id)
-        if self._adds.get(pair, 0) >= self.max_tranches - 1:
+        if self._adds.get(pair, 0) >= _int(self.max_tranches) - 1:
             return None  # all tranches deployed
         ref = self._last_buy.get(pair, trade.open_rate)
-        if ref and current_rate <= ref * (1 - self.dip_step):
+        if ref and current_rate <= ref * (1 - _float(self.dip_step)):
             self._adds[pair] = self._adds.get(pair, 0) + 1
             self._last_buy[pair] = current_rate
             size = (self.tranche_stake if self.tranche_stake > 0

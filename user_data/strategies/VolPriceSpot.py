@@ -13,8 +13,18 @@ stoploss: this experiment isolates ENTRY timing against BaseSpot
 (gate-flip entries), so exits stay identical.
 """
 import numpy as np
-from bullseye.strategy import IStrategy
+from bullseye.strategy import DecimalParameter, IntParameter, IStrategy
 from pandas import DataFrame
+
+
+def _int(value) -> int:
+    """Unwrap hyperopt parameters on old and new engines."""
+    return int(getattr(value, "value", value))
+
+
+def _float(value) -> float:
+    """Unwrap hyperopt parameters on old and new engines."""
+    return float(getattr(value, "value", value))
 
 
 def _mfi(high, low, close, volume, period=14):
@@ -43,11 +53,13 @@ class VolPriceSpot(IStrategy):
 
     position_adjustment_enable = False
 
-    obv_window: int = 20
-    mfi_period: int = 14
-    mfi_trigger: float = 30.0
+    obv_window = IntParameter(10, 30, default=20, space="buy", optimize=True)
+    mfi_period = IntParameter(7, 21, default=14, space="buy", optimize=True)
+    mfi_trigger = DecimalParameter(20.0, 40.0, default=30.0, space="buy",
+                                     optimize=True)
     vol_window: int = 20
-    vol_mult: float = 1.5
+    vol_mult = DecimalParameter(1.0, 2.5, default=1.5, space="buy",
+                                optimize=True)
     vol_days: int = 3
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
@@ -59,11 +71,11 @@ class VolPriceSpot(IStrategy):
         signed = np.sign(close.diff()).fillna(0.0) * volume
         dataframe["obv"] = signed.cumsum()
         dataframe["obv_max"] = (
-            dataframe["obv"].rolling(self.obv_window).max().shift(1)
+            dataframe["obv"].rolling(_int(self.obv_window)).max().shift(1)
         )
         dataframe["mfi"] = _mfi(
             dataframe["high"], dataframe["low"], close, volume,
-            self.mfi_period,
+            _int(self.mfi_period),
         )
         dataframe["vol_ma"] = volume.rolling(self.vol_window).mean().shift(1)
         dataframe["vol_ratio"] = volume / dataframe["vol_ma"]
@@ -76,15 +88,17 @@ class VolPriceSpot(IStrategy):
             (dataframe["obv"] > dataframe["obv_max"])
             & (dataframe["volume"] > 0)
         ).fillna(False)
+        trig = _float(self.mfi_trigger)
         mfi_rev = (
-            (dataframe["mfi"] > self.mfi_trigger)
-            & (dataframe["mfi"].shift(1) <= self.mfi_trigger)
+            (dataframe["mfi"] > trig)
+            & (dataframe["mfi"].shift(1) <= trig)
             & (dataframe["volume"] > 0)
         ).fillna(False)
+        mult = _float(self.vol_mult)
         vol_surge = (
-            (dataframe["vol_ratio"] > self.vol_mult)
-            & (dataframe["vol_ratio"].shift(1) > self.vol_mult)
-            & (dataframe["vol_ratio"].shift(2) > self.vol_mult)
+            (dataframe["vol_ratio"] > mult)
+            & (dataframe["vol_ratio"].shift(1) > mult)
+            & (dataframe["vol_ratio"].shift(2) > mult)
             & dataframe["up3"]
             & (dataframe["volume"] > 0)
         ).fillna(False)

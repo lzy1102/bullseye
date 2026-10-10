@@ -11,7 +11,17 @@ GridBank10 does grid only. No informative dependency, no DCA.
 """
 from pandas import DataFrame
 
-from bullseye.strategy import IStrategy
+from bullseye.strategy import DecimalParameter, IntParameter, IStrategy
+
+
+def _int(value) -> int:
+    """Unwrap hyperopt parameters on old and new engines."""
+    return int(getattr(value, "value", value))
+
+
+def _float(value) -> float:
+    """Unwrap hyperopt parameters on old and new engines."""
+    return float(getattr(value, "value", value))
 
 
 class TrendFollowSpot(IStrategy):
@@ -27,10 +37,19 @@ class TrendFollowSpot(IStrategy):
 
     position_adjustment_enable = False
 
+    mam_fast = IntParameter(5, 20, default=10, space="buy", optimize=True)
+    mam_slow = IntParameter(15, 40, default=20, space="buy", optimize=True)
+    gap = DecimalParameter(0.001, 0.010, default=0.003, space="buy",
+                           optimize=True)
+
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        dataframe["mam_10"] = dataframe["close"].rolling(10).mean()
-        dataframe["mam_20"] = dataframe["close"].rolling(20).mean()
-        gap = 0.003
+        fast = _int(self.mam_fast)
+        slow = _int(self.mam_slow)
+        if slow <= fast:
+            slow = fast + 1
+        dataframe["mam_10"] = dataframe["close"].rolling(fast).mean()
+        dataframe["mam_20"] = dataframe["close"].rolling(slow).mean()
+        gap = _float(self.gap)
         bull = (dataframe["mam_10"] > dataframe["mam_20"] * (1 + gap))
         bear = (dataframe["mam_10"] < dataframe["mam_20"] * (1 - gap))
         dataframe["trend"] = 0
