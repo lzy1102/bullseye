@@ -56,6 +56,14 @@ class GridBank10(IStrategy):
     # momentum dies. Kept as an experiment variant.
     boll_period: int = 20
     boll_std: float = 2.0
+
+    def _boll_on(self) -> bool:
+        # Kill-switch for the experiment: set use_boll_exit: false
+        # in the config to run the pre-Bollinger baseline.
+        cfg = getattr(self, "config", None)
+        if isinstance(cfg, dict):
+            return bool(cfg.get("use_boll_exit", True))
+        return True
     # Per-tranche stake. <= 0 means AUTO: total equity / max_tranches,
     # so position sizing follows the account with no manual tuning.
     tranche_stake: float = 0.0
@@ -178,7 +186,7 @@ class GridBank10(IStrategy):
         dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
         if dataframe is None or dataframe.empty:
             return None
-        if "bb_lower" not in dataframe:
+        if not self._boll_on() or "bb_lower" not in dataframe:
             return None
         last = dataframe.iloc[-1]
         if last["close"] < last["bb_lower"]:

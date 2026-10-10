@@ -28,6 +28,14 @@ class BaseSpot(IStrategy):
     boll_period: int = 20
     boll_std: float = 2.0
 
+    def _boll_on(self) -> bool:
+        # Kill-switch for the experiment: set use_boll_exit: false
+        # in the config to run the pre-Bollinger baseline.
+        cfg = getattr(self, "config", None)
+        if isinstance(cfg, dict):
+            return bool(cfg.get("use_boll_exit", True))
+        return True
+
     @informative("1d")
     def populate_indicators_1d(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         dataframe["ma20d"] = dataframe["close"].rolling(20).mean()
@@ -80,6 +88,10 @@ class BaseSpot(IStrategy):
         last = dataframe.iloc[-1]
         if last["trend_1d"] == -1:
             return "trend_bear"
-        if "bb_lower" in dataframe and last["close"] < last["bb_lower"]:
+        if (
+            self._boll_on()
+            and "bb_lower" in dataframe
+            and last["close"] < last["bb_lower"]
+        ):
             return "boll_dead"
         return None

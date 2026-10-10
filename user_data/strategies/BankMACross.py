@@ -72,14 +72,23 @@ class BankMACross(IStrategy):
         ] = (1, "golden_cross")
         return dataframe
 
+    def _boll_on(self) -> bool:
+        # Kill-switch for the experiment: set use_boll_exit: false
+        # in the config to run the pre-Bollinger baseline.
+        cfg = getattr(self, "config", None)
+        if isinstance(cfg, dict):
+            return bool(cfg.get("use_boll_exit", True))
+        return True
+
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        dataframe.loc[
-            (
-                (dataframe["close"] < dataframe["bb_lower"])
-                & (dataframe["volume"] > 0)
-            ),
-            ["exit_long", "exit_tag"],
-        ] = (1, "boll_dead")
+        if self._boll_on():
+            dataframe.loc[
+                (
+                    (dataframe["close"] < dataframe["bb_lower"])
+                    & (dataframe["volume"] > 0)
+                ),
+                ["exit_long", "exit_tag"],
+            ] = (1, "boll_dead")
         dataframe.loc[
             (
                 (dataframe["ema_fast"] < dataframe["ema_slow"])

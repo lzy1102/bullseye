@@ -74,6 +74,14 @@ class TrendGridTradingStrategySpot(IStrategy):
     boll_period: int = 20
     boll_std: float = 2.0
 
+    def _boll_on(self) -> bool:
+        # Kill-switch for the experiment: set use_boll_exit: false
+        # in the config to run the pre-Bollinger baseline.
+        cfg = getattr(self, "config", None)
+        if isinstance(cfg, dict):
+            return bool(cfg.get("use_boll_exit", True))
+        return True
+
     # custom_exit = True
     use_custom_stoploss = False
 
@@ -246,7 +254,7 @@ class TrendGridTradingStrategySpot(IStrategy):
             return "trend_reversed_short"
 
         # ========== 3. 布林下轨提前离场（动量死亡，不等日线确认） ==========
-        if ('bb_lower' in dataframe and 'close' in dataframe
+        if (self._boll_on() and 'bb_lower' in dataframe and 'close' in dataframe
                 and dataframe['close'].iloc[-1] < dataframe['bb_lower'].iloc[-1]):
             logger.info(f"{pair} {current_time} 跌破布林下轨，提前离场（{current_profit:.2%}）")
             return "boll_dead"
