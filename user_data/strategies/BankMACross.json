@@ -1,0 +1,17 @@
+{
+  "strategy_name": "BankMACross",
+  "params": {
+    "roi": {},
+    "stoploss": {},
+    "trailing": {},
+    "max_open_trades": {},
+    "buy": {
+      "fast_period": 12,
+      "slow_period": 25
+    },
+    "sell": {},
+    "protection": {}
+  },
+  "ft_stratparam_v": 1,
+  "export_time": "2026-10-10 15:03:13.824203+00:00"
+}

@@ -1,0 +1,19 @@
+{
+  "strategy_name": "VolPriceSpot",
+  "params": {
+    "roi": {},
+    "stoploss": {},
+    "trailing": {},
+    "max_open_trades": {},
+    "buy": {
+      "obv_window": 15,
+      "mfi_period": 11,
+      "mfi_trigger": 38.358,
+      "vol_mult": 1.211
+    },
+    "sell": {},
+    "protection": {}
+  },
+  "ft_stratparam_v": 1,
+  "export_time": "2026-10-10 15:03:13.824203+00:00"
+}

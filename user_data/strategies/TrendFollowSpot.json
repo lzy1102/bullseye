@@ -1,0 +1,18 @@
+{
+  "strategy_name": "TrendFollowSpot",
+  "params": {
+    "roi": {},
+    "stoploss": {},
+    "trailing": {},
+    "max_open_trades": {},
+    "buy": {
+      "gap": 0.007,
+      "mam_fast": 10,
+      "mam_slow": 39
+    },
+    "sell": {},
+    "protection": {}
+  },
+  "ft_stratparam_v": 1,
+  "export_time": "2026-10-10 15:03:13.824203+00:00"
+}
