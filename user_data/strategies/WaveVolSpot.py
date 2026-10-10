@@ -10,11 +10,15 @@ Structure (per bar t, all causal):
 - Wave 2: retrace = (H - L2) / (H - L_prev) in [0.3, 1.0)
   (< 1.0 = wave-1 low never violated, the Elliott hard rule).
 
-Entry (tag 'wave3_break'):
-- daily gate up (SMA20 > SMA60),
-- fresh breakout: close[t] > H and close[t-1] <= H,
-- volume: vol[t] > vol_mult * mean(vol[t-20..t-1]) and close[t] > open[t]
-  (放量阳线突破, the volume-price confirmation).
+Entry (tag 'wave3_pullback'): two-phase breakout-pullback.
+- Phase 1 (breakout bar b): daily gate up, wave structure valid, fresh
+  cross above H, volume > vol_mult * mean (放量突破, marks the level).
+- Phase 2 (entry bar s, b+1..b+max_wait): close back near the FROZEN
+  breakout level (bo_H*0.995 <= close <= bo_H*(1+pullback_tol)), gate
+  still up, and the count not invalidated (close > bo_Lprev, the
+  wave-1 low from bar b). The level is frozen at breakout time on
+  purpose: a new higher pivot must not stale the level being retested.
+  Buy the retest, not the break.
 
 Exit:
 - wave invalidation: retrace >= 1.0 (wave-2 region broken), or
@@ -22,6 +26,7 @@ Exit:
 No DCA, no ROI, no stoploss: the invalidation exit is the stop.
 """
 import numpy as np
+import pandas as pd
 from bullseye.strategy import IStrategy
 from pandas import DataFrame
 
@@ -45,9 +50,14 @@ class WaveVolSpot(IStrategy):
     min_wave: float = 0.08
     # Wave-2 retracement band of wave 1.
     retrace_lo: float = 0.30
-    # Volume breakout multiple vs prior 20-day mean (excl. current bar).
-    vol_mult: float = 1.5
+    # Volume multiple vs prior 20-day mean (excl. current bar) for the
+    # breakout bar. 1.2, not 1.5: the volume spike often lands a bar or
+    # two after the actual cross, so the marking bar must not demand it.
+    vol_mult: float = 1.2
     vol_window: int = 20
+    # Pullback entry band above H and max bars to wait after breakout.
+    pullback_tol: float = 0.03
+    max_wait: int = 15
 
     def _wave_frame(self, dataframe: DataFrame) -> DataFrame:
         k = int(self.pivot_k)
@@ -146,28 +156,49 @@ class WaveVolSpot(IStrategy):
             & (df["wave1"] >= self.min_wave)
             & (df["retrace"] >= 1.0)
         ).fillna(False)
+        # Phase-1 breakout event (marks the level; entry waits for the
+        # pullback below).
+        gate = (df["ma20"] > df["ma60"]).fillna(False)
+        df["bo_event"] = (
+            gate
+            & df["wave_ok"]
+            & (df["close"] > df["wave_H"])
+            & (df["close"].shift(1) <= df["wave_H"].shift(1)).fillna(False)
+            & (df["vol_ratio"] > self.vol_mult)
+            & (df["close"] > df["open"])
+            & (df["volume"] > 0)
+        )
+        # Carry the whole breakout setup forward, frozen at bar b: the
+        # level (bo_H) and its wave-1 low (bo_Lprev). A new higher pivot
+        # must NOT stale the level currently being retested.
+        idx = np.arange(len(df))
+        df["bo_H"] = df["wave_H"].where(df["bo_event"]).ffill()
+        df["bo_Lprev"] = df["wave_Lprev"].where(df["bo_event"]).ffill()
+        df["bo_idx"] = pd.Series(idx, index=df.index).where(
+            df["bo_event"]).ffill()
+        df["bo_age"] = idx - df["bo_idx"]
         return df
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        gate = dataframe["ma20"] > dataframe["ma60"]
-        # Above the wave-1 high (no fresh-cross requirement: in real
-        # trends price never dips back below the last pivot high, so a
-        # fresh-cross filter only catches recoveries and misses the leg).
-        above_h = dataframe["close"] > dataframe["wave_H"]
-        vol_ok = (
-            (dataframe["vol_ratio"] > self.vol_mult)
-            & (dataframe["close"] > dataframe["open"])
-            & (dataframe["volume"] > 0)
+        gate = (dataframe["ma20"] > dataframe["ma60"]).fillna(False)
+        # Phase-2 pullback: back near the FROZEN breakout level within
+        # max_wait bars, gate still up, wave-1 low intact.
+        in_band = (
+            (dataframe["close"] >= dataframe["bo_H"] * 0.995)
+            & (dataframe["close"] <= dataframe["bo_H"] * (1 + self.pullback_tol))
         )
+        not_invalid = dataframe["close"] > dataframe["bo_Lprev"]
         dataframe.loc[
             (
-                gate.fillna(False)
-                & dataframe["wave_ok"]
-                & above_h.fillna(False)
-                & vol_ok
+                gate
+                & (dataframe["bo_age"] >= 1)
+                & (dataframe["bo_age"] <= self.max_wait)
+                & in_band.fillna(False)
+                & not_invalid.fillna(False)
+                & (dataframe["volume"] > 0)
             ),
             ["enter_long", "enter_tag"],
-        ] = (1, "wave3_break")
+        ] = (1, "wave3_pullback")
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
