@@ -6,7 +6,7 @@ including data fetching, signal processing, and order execution.
 """
 import logging
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import pandas as pd
 
@@ -72,6 +72,9 @@ class StrategyRunner:
 
         # Analysis cache: pair -> (dataframe, last_analyzed_time)
         self._analysis_cache: Dict[str, tuple] = {}
+        # Last processed (closed) candle per pair: gates re-analysis to
+        # once per new candle instead of every throttle tick.
+        self._last_candle: Dict[str, Any] = {}
 
         # Running state
         self._running = False
@@ -134,6 +137,16 @@ class StrategyRunner:
             if current_rate <= 0:
                 return
 
+            # Process only once per new closed candle (freqtrade
+            # process_only_new_candles semantics): re-evaluating the same
+            # bar every throttle tick duplicated signals and burned CPU
+            # re-running indicators on full history.
+            candle = latest.get("date") if hasattr(latest, "get") else None
+            if candle is not None:
+                if self._last_candle.get(pair) == candle:
+                    return
+                self._last_candle[pair] = candle
+
             # 2. Check for exit signals (if we have an open trade)
             self._check_exit_signals(pair, dataframe, current_rate, current_time)
 
@@ -169,6 +182,23 @@ class StrategyRunner:
                 startup_candles=startup_candles + 100,  # Extra for indicators
             )
 
+            if dataframe.empty:
+                return None
+
+            # Drop the still-forming candle: acting on it repaints (the
+            # signal can appear/disappear within the same bar) and makes
+            # live results diverge from backtests, which only ever see
+            # closed candles.
+            try:
+                from bullseye.strategy.interface import timeframe_to_minutes
+                tf_min = timeframe_to_minutes(timeframe)
+                last_ts = pd.Timestamp(dataframe["date"].iloc[-1])
+                now_ts = (pd.Timestamp.now(tz=last_ts.tzinfo)
+                          if last_ts.tzinfo else pd.Timestamp.now())
+                if last_ts + pd.Timedelta(minutes=tf_min) > now_ts:
+                    dataframe = dataframe.iloc[:-1]
+            except Exception:
+                pass
             if dataframe.empty:
                 return None
 
@@ -359,26 +389,9 @@ class StrategyRunner:
             logger.debug(f"Entry skipped for {pair}: locked at limit-up")
             return
 
-        # Confirm entry with strategy
-        try:
-            confirmed = self._strategy.confirm_trade_entry(
-                pair=pair,
-                order_type="market",
-                amount=0,  # Will be calculated
-                rate=rate,
-                time_in_force="GTC",
-                current_time=current_time,
-                entry_tag=enter_tag,
-                side=direction,
-            )
-
-            if not confirmed:
-                logger.debug(f"Entry signal rejected by strategy for {pair}")
-                return
-
-        except Exception as e:
-            logger.warning(f"Error in confirm_trade_entry: {e}")
-            # Continue with entry if confirm method not implemented
+        # confirm_trade_entry is invoked exactly once, inside
+        # OrderExecutor.execute_entry (canonical freqtrade placement);
+        # the runner used to call it a second time with placeholder args.
 
         # Execute entry (stake/leverage/entry-price resolved inside)
         trade = self._executor.execute_entry(

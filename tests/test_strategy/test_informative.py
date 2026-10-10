@@ -356,3 +356,55 @@ class TestLiveRunnerInformative:
         # day-2 rows see day-1's value (5 * 10), never day-2's (7 * 10).
         assert day1["dval_1d"].isna().all()
         assert (day2["dval_1d"] == 50.0).all()
+
+    def test_runner_drops_still_forming_candle(self):
+        """Live analysis must only act on CLOSED candles (no repainting)."""
+        from unittest.mock import MagicMock
+        from bullseye.bot.strategy_runner import StrategyRunner
+        from bullseye.configuration.config import Config
+
+        class S(IStrategy):
+            timeframe = "1h"
+            startup_candle_count = 1
+
+            def populate_indicators(self, dataframe, metadata):
+                return dataframe
+
+            def populate_entry_trend(self, dataframe, metadata):
+                return dataframe
+
+            def populate_exit_trend(self, dataframe, metadata):
+                return dataframe
+
+        last_open = pd.Timestamp.now().floor("1h")  # candle still forming
+        dates = pd.date_range(end=last_open, periods=5, freq="1h")
+        base = pd.DataFrame({
+            "date": dates, "open": 1.0, "high": 1.0, "low": 1.0,
+            "close": 1.0, "volume": 1.0,
+        })
+        dp = MagicMock()
+        dp.historic_ohlcv.side_effect = lambda pair, timeframe, **k: base.copy()
+        runner = StrategyRunner(
+            Config(), S(), dp, MagicMock(), MagicMock(), MagicMock()
+        )
+        analyzed = runner._analyze_pair("BTC/USDT")
+        assert analyzed is not None
+        # The in-progress bar is dropped; the last row is the previous close.
+        assert analyzed["date"].iloc[-1] == dates[-2]
+
+
+class TestTimeframeHelpers:
+    def test_boundary_alignment(self):
+        from datetime import datetime, timezone
+        from bullseye.strategy.interface import (
+            timeframe_to_next_date,
+            timeframe_to_prev_date,
+        )
+
+        d = datetime(2024, 1, 1, 10, 30, tzinfo=timezone.utc)
+        assert timeframe_to_prev_date("1h", d) == datetime(
+            2024, 1, 1, 10, 0, tzinfo=timezone.utc
+        )
+        assert timeframe_to_next_date("1h", d) == datetime(
+            2024, 1, 1, 11, 0, tzinfo=timezone.utc
+        )

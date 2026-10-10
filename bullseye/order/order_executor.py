@@ -332,7 +332,7 @@ class OrderExecutor:
                     time_in_force="GTC",
                     current_time=datetime.now(),
                     entry_tag=enter_tag,
-                    side="long",
+                    side=side,
                 )
                 if not confirmed:
                     logger.info(f"Entry signal rejected by strategy for {pair}")
@@ -345,7 +345,9 @@ class OrderExecutor:
 
         # Live mode: route through the gateway and book the actual fill
         if self.is_live:
-            return self._execute_entry_live(pair, rate, amount, stake_amount, enter_tag)
+            return self._execute_entry_live(
+                pair, rate, amount, stake_amount, enter_tag, side=side
+            )
 
         # Execute the trade (simulated)
         trade = self._pm.open_trade(
@@ -460,6 +462,7 @@ class OrderExecutor:
         amount: float,
         stake_amount: float,
         enter_tag: Optional[str],
+        side: str = "long",
     ) -> Optional[LocalTrade]:
         """
         Send an entry order through the gateway and book the confirmed fill.
@@ -467,10 +470,14 @@ class OrderExecutor:
         Confirmation model: send_order returns an orderid, then the order
         state is polled via query_order until terminal or timeout. The
         LocalTrade is created from ACTUAL fill price and quantity.
+
+        `side` maps to the gateway direction: short signals previously
+        opened LONG positions because the direction was hardcoded.
         """
+        is_short = side == "short"
         orderid = self._gateway.send_order({
             "symbol": pair,
-            "direction": Direction.LONG,
+            "direction": Direction.SHORT if is_short else Direction.LONG,
             "offset": Offset.OPEN,
             "order_type": OrderType.MARKET,
             "price": rate,
@@ -516,6 +523,7 @@ class OrderExecutor:
             stake_amount=fill_stake,
             enter_tag=enter_tag,
             market_type=self._market_type,
+            is_short=is_short,
         )
         logger.info(
             f"Live entry executed for {pair}: orderid={orderid}, "
@@ -527,7 +535,8 @@ class OrderExecutor:
         self._fire_order_filled(
             pair, trade,
             make_fill_order(
-                pair, "buy", fill_price, fill_amount, datetime.now()
+                pair, "sell" if is_short else "buy",
+                fill_price, fill_amount, datetime.now()
             ),
         )
         return trade
@@ -613,13 +622,12 @@ class OrderExecutor:
         rate: float,
         current_time: Optional[datetime] = None,
     ) -> Optional[float]:
-        """Evaluate and book a DCA add for a live open trade.
+        """Evaluate and book a DCA add for an open trade.
 
         Calls strategy.adjust_trade_position() (gated by
-        position_adjustment_enable) and books a positive stake via
-        PositionManager.adjust_position(). Live gateway routing for adds
-        is not yet implemented: in live mode the add is booked locally
-        after logging a warning (dry-run semantics).
+        position_adjustment_enable). In dry-run the add is booked
+        directly; in live mode it is routed through the gateway and the
+        actual fill is booked (see `_execute_adjust_live`).
 
         Returns the booked add stake, or None when no add happened.
         """
@@ -670,14 +678,68 @@ class OrderExecutor:
         if add <= 0:
             return None
 
+        add = min(add, available)
         if self.is_live:
-            logger.warning(
-                f"Live DCA for {trade.pair} is not gateway-routed yet; "
-                "booking locally with dry-run semantics"
-            )
-        if self._pm.adjust_position(trade, min(add, available), rate):
-            return min(add, available)
+            return self._execute_adjust_live(trade, rate, add)
+        if self._pm.adjust_position(trade, add, rate):
+            return add
         return None
+
+    def _execute_adjust_live(
+        self, trade: LocalTrade, rate: float, add_stake: float
+    ) -> Optional[float]:
+        """Route a DCA add through the gateway and book the actual fill.
+
+        Previously the add was booked locally without any broker order,
+        so local position size drifted from the broker's. Mirrors the
+        live entry flow: send, poll for fill, book the filled amount.
+        """
+        amount = add_stake / rate if rate > 0 else 0.0
+        if amount <= 0:
+            return None
+        orderid = self._gateway.send_order({
+            "symbol": trade.pair,
+            "direction": Direction.LONG,
+            "offset": Offset.OPEN,
+            "order_type": OrderType.MARKET,
+            "price": rate,
+            "volume": amount,
+        })
+        if not orderid:
+            logger.error(f"Live DCA for {trade.pair} rejected by gateway")
+            return None
+        order = self._wait_for_fill(orderid, trade=trade, is_entry=True)
+        if order is None:
+            logger.error(
+                f"Live DCA for {trade.pair}: no order state "
+                f"(orderid={orderid}); not booking"
+            )
+            self._safe_cancel(orderid)
+            return None
+        if order.traded <= 0:
+            logger.warning(
+                f"Live DCA for {trade.pair} not filled "
+                f"(status={order.status.value})"
+            )
+            if order.status not in _TERMINAL_STATUSES:
+                self._safe_cancel(orderid)
+            return None
+        if order.status == Status.PARTTRADED:
+            self._safe_cancel(orderid)
+        fill_price = order.price if order.price > 0 else rate
+        fill_stake = fill_price * order.traded
+        if not self._pm.adjust_position(trade, fill_stake, fill_price):
+            return None
+
+        from bullseye.order.stock_rules import make_fill_order
+
+        self._fire_order_filled(
+            trade.pair, trade,
+            make_fill_order(
+                trade.pair, "buy", fill_price, order.traded, datetime.now()
+            ),
+        )
+        return fill_stake
 
     def _wait_for_fill(
         self,

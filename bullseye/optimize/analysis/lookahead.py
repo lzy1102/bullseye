@@ -196,35 +196,43 @@ def lookahead_analysis(strategy: str, pair: str, timeframe: str, timerange: Opti
             sys.exit(1)
 
         # Create strategy instance
-        strategy_class()
+        strategy_obj = strategy_class()
 
-        # Load data (placeholder - would need actual data loading)
-        console.print("[yellow]Note: This requires historical data.[/yellow]")
-        console.print("[dim]Run 'bullseye download-data' first to get the data.[/dim]\n")
+        # Load historical data from disk. Previously this command was a
+        # placeholder that always reported bias_detected=False without
+        # running any analysis at all.
+        from bullseye.configuration.config import Config
+        from bullseye.backtesting.engine import BacktestEngine
 
-        # For demonstration, show what the analysis would do
-        console.print("[bold]Analysis Process:[/bold]")
-        console.print("  1. Run strategy on full dataset")
-        console.print("  2. Truncate last N candles from dataset")
-        console.print("  3. Run strategy on truncated dataset")
-        console.print("  4. Compare signals at common points")
-        console.print("  5. If signals differ, lookahead bias detected\n")
+        cfg = Config(config)
+        engine = BacktestEngine(cfg)
+        data = engine._load_data([pair], timeframe, timerange)
+        dataframe = data.get(pair)
+        if dataframe is None or getattr(dataframe, "empty", False):
+            console.print(
+                f"[red]No data for {pair} {timeframe}. "
+                "Run 'bullseye download-data' first.[/red]"
+            )
+            sys.exit(1)
 
-        # Placeholder result
-        result = {
-            'pair': pair,
-            'bias_detected': False,
-            'biased_indicators': [],
-            'total_candles': 0,
-            'tested_truncations': [1, 5, 10, 50, 100],
-            'note': 'Actual analysis requires downloaded historical data'
-        }
+        # Strategies that consult self.dp need a data provider; wire one
+        # with the loaded frame at its last index.
+        try:
+            from bullseye.backtesting.engine import BacktestDataProvider
+
+            dp = BacktestDataProvider(data, [pair])
+            dp.set_current_index(pair, len(dataframe) - 1)
+            strategy_obj.dp = dp
+        except Exception:
+            pass
+
+        analyzer = LookaheadAnalysis(cfg.to_dict())
+        result = analyzer.analyze(strategy_obj, dataframe, pair)
 
         if print_json:
             import json
             console.print(json.dumps(result, indent=2))
         else:
-            analyzer = LookaheadAnalysis()
             analyzer.print_report(result)
 
     except Exception as e:

@@ -933,6 +933,7 @@ class TestAshareTradingRules:
         assert BacktestEngine._price_limit_ratio("000001.SZ") == pytest.approx(0.10)
         assert BacktestEngine._price_limit_ratio("300001.SZ") == pytest.approx(0.20)
         assert BacktestEngine._price_limit_ratio("688001.SH") == pytest.approx(0.20)
+        assert BacktestEngine._price_limit_ratio("430001.BJ") == pytest.approx(0.30)
         assert BacktestEngine._price_limit_ratio("BTC/USDT") == pytest.approx(0.10)
 
     def test_rules_opt_out(self):

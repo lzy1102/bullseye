@@ -6,7 +6,7 @@ a unified interface for balance queries and updates.
 """
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from bullseye.configuration.config import Config
 
@@ -353,6 +353,35 @@ class Wallets:
             # Fixed stake amount
             available = self.get_available_stake_amount()
             return min(self._stake_amount, available)
+
+    def sync_from_account(self, account: Any) -> None:
+        """Seed/refresh wallet balances from a gateway AccountData.
+
+        Live wallets started empty (`update_balance` was never called),
+        so available stake was 0 and no live order could ever be sized.
+        Called at bot startup and periodically from the main loop.
+        """
+        if account is None:
+            return
+        currency = getattr(account, "currency", None) or self._config.stake_currency
+        try:
+            total = float(getattr(account, "balance", 0.0) or 0.0)
+            free = float(getattr(account, "available", 0.0) or 0.0)
+            frozen = float(getattr(account, "frozen", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            logger.warning("Ignoring malformed account snapshot")
+            return
+        self.update_balance(currency, total=total, free=free, used=frozen)
+        logger.debug(
+            f"Wallet synced from gateway: {currency} total={total}, free={free}"
+        )
+
+    def update_trade_stake(self, pair: str, stake_amount: float) -> None:
+        """Refresh a registered trade's stake after a DCA add."""
+        for trade in self._open_trades:
+            if trade.pair == pair:
+                trade.stake_amount = stake_amount
+                return
 
     def register_trade(self, trade: TradeInfo) -> None:
         """

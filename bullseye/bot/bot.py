@@ -125,6 +125,12 @@ class BullseyeBot:
             )
             logger.debug(f"Wallets created: {self._wallets}")
 
+            # Live mode: seed balances from the gateway account. Without
+            # this the wallet stayed empty (free=0) and every live entry
+            # was rejected as "invalid stake amount".
+            if not self._config.dry_run:
+                self._sync_wallet_from_gateway(initial=True)
+
             # 7. Create position manager
             self._position_manager = PositionManager(
                 config=self._config,
@@ -465,6 +471,35 @@ class BullseyeBot:
 
         logger.info("Bullseye Bot stopped")
 
+    def _sync_wallet_from_gateway(self, initial: bool = False) -> None:
+        """Refresh wallet balances from the gateway account snapshot.
+
+        Called at startup and periodically from the main loop so live
+        free/used balances track the broker (fills, fees, corporate
+        actions) instead of drifting from local bookkeeping.
+        """
+        if self._gateway is None or self._wallets is None:
+            return
+        try:
+            account = self._gateway.query_account()
+        except Exception as e:
+            logger.warning(f"Account sync failed: {e}")
+            return
+        if account is None:
+            if initial:
+                logger.warning(
+                    "Gateway returned no account snapshot; live wallets "
+                    "stay empty until the first successful sync"
+                )
+            return
+        self._wallets.sync_from_account(account)
+        if initial:
+            logger.info(
+                f"Live wallet seeded from gateway: "
+                f"{getattr(account, 'currency', '?')} "
+                f"free={getattr(account, 'available', 0.0)}"
+            )
+
     def run(self) -> None:
         """
         Run the trading bot (blocking).
@@ -478,6 +513,19 @@ class BullseyeBot:
             while self._running:
                 # Process each pair
                 self._process_cycle()
+
+                # Periodic live wallet sync (default: once a minute)
+                if not self._config.dry_run:
+                    try:
+                        interval = float(
+                            self._config.get("execution.account_sync_secs", 60)
+                        )
+                    except (TypeError, ValueError):
+                        interval = 60.0
+                    now = time.monotonic()
+                    if now - getattr(self, "_last_account_sync", 0.0) >= interval:
+                        self._last_account_sync = now
+                        self._sync_wallet_from_gateway()
 
                 # Sleep for throttle interval
                 time.sleep(self._config.process_throttle_secs)

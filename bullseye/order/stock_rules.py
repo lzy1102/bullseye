@@ -34,13 +34,18 @@ def detect_market_type(pair: str) -> str:
 def price_limit_ratio(pair: str) -> float:
     """Daily price-limit ratio for an A-share code.
 
-    Main board 10%; ChiNext (30xxxx) / STAR (688xxx) 20%. ST/*ST (5%)
-    cannot be identified from the code alone — override per pair.
+    Main board 10%; ChiNext (30xxxx) / STAR (688xxx) 20%; Beijing Stock
+    Exchange (.BJ) 30%. ST/*ST (5%) cannot be identified from the code
+    alone — override per pair.
     """
     upper = (pair or "").upper()
     m = re.match(r"^(\d{6})(\.(SZ|SH|BJ))?$", upper)
-    if m and (m.group(1).startswith("30") or m.group(1).startswith("688")):
-        return 0.20
+    if m:
+        code, exchange = m.group(1), (m.group(3) or "").upper()
+        if exchange == "BJ":
+            return 0.30
+        if code.startswith("30") or code.startswith("688"):
+            return 0.20
     return 0.10
 
 

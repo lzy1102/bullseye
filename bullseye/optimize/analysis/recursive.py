@@ -4,7 +4,7 @@ Recursive Analysis for Bullseye
 Detects recursive bias in trading strategies by running backtests
 with different startup_candle_count values.
 """
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 import click
 from rich.console import Console
@@ -28,15 +28,23 @@ class RecursiveAnalysis:
         self.config = config or {}
         self.results = {}
 
-    def analyze(self, strategy, dataframe: Any, pair: str) -> Dict:
+    def analyze(
+        self,
+        strategy,
+        dataframe: Any,
+        pair: str,
+        startup_periods: Optional[List[int]] = None,
+    ) -> Dict:
         """
         Analyze a strategy for recursive bias.
-        
+
         Args:
             strategy: Strategy instance
             dataframe: DataFrame with OHLCV data
             pair: Trading pair name
-            
+            startup_periods: Startup candle counts to compare (defaults
+                to [0, 10, 50, 100, 200, 500])
+
         Returns:
             Dictionary with analysis results
         """
@@ -44,7 +52,7 @@ class RecursiveAnalysis:
 
         try:
             # Test different startup periods
-            startup_periods = [0, 10, 50, 100, 200, 500]
+            startup_periods = startup_periods or [0, 10, 50, 100, 200, 500]
             signals_by_period = {}
 
             for startup in startup_periods:
@@ -195,7 +203,7 @@ def recursive_analysis(strategy: str, pair: str, timeframe: str, timerange: Opti
             sys.exit(1)
 
         # Create strategy instance
-        strategy_class()
+        strategy_obj = strategy_class()
 
         # Parse startup periods
         periods = [0, 10, 50, 100, 200, 500]
@@ -206,31 +214,30 @@ def recursive_analysis(strategy: str, pair: str, timeframe: str, timerange: Opti
                 console.print("[red]Invalid startup periods format. Use: 0,50,100,200[/red]")
                 sys.exit(1)
 
-        console.print("[yellow]Note: This requires historical data.[/yellow]")
-        console.print("[dim]Run 'bullseye download-data' first to get the data.[/dim]\n")
+        # Load historical data from disk. Previously this command was a
+        # placeholder that always reported bias_detected=False without
+        # running any analysis at all.
+        from bullseye.configuration.config import Config
+        from bullseye.backtesting.engine import BacktestEngine
 
-        # For demonstration, show what the analysis would do
-        console.print("[bold]Analysis Process:[/bold]")
-        console.print("  1. Run strategy with different startup_candle_count values")
-        console.print("  2. Compare signals across different startup periods")
-        console.print("  3. If signals differ, recursive bias detected")
-        console.print(f"  4. Testing periods: {periods}\n")
+        cfg = Config(config)
+        engine = BacktestEngine(cfg)
+        data = engine._load_data([pair], timeframe, timerange)
+        dataframe = data.get(pair)
+        if dataframe is None or getattr(dataframe, "empty", False):
+            console.print(
+                f"[red]No data for {pair} {timeframe}. "
+                "Run 'bullseye download-data' first.[/red]"
+            )
+            sys.exit(1)
 
-        # Placeholder result
-        result = {
-            'pair': pair,
-            'bias_detected': False,
-            'sensitive_indicators': [],
-            'tested_periods': periods,
-            'recommendation': 'Use startup_candle_count >= 100 for stable indicators',
-            'note': 'Actual analysis requires downloaded historical data'
-        }
+        analyzer = RecursiveAnalysis(cfg.to_dict())
+        result = analyzer.analyze(strategy_obj, dataframe, pair, periods)
 
         if print_json:
             import json
             console.print(json.dumps(result, indent=2))
         else:
-            analyzer = RecursiveAnalysis()
             analyzer.print_report(result)
 
     except Exception as e:

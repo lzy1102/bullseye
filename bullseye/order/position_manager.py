@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from bullseye.configuration.config import Config
 from bullseye.strategy.interface import IStrategy
-from bullseye.wallets.wallets import Wallets
+from bullseye.wallets.wallets import TradeInfo, Wallets
 from bullseye.order.settlement import (
     SettlementRule,
     SettlementType,
@@ -570,6 +570,15 @@ class PositionManager:
         # Fees (open + close) are settled once at close via calc_profit;
         # deducting fee_open here as well would double-charge it.
         self._wallets.deduct_amount(self._config.stake_currency, stake_amount)
+        # Track the position for unlimited-stake slot math; previously
+        # nothing registered open trades, so sizing always saw zero.
+        self._wallets.register_trade(TradeInfo(
+            pair=pair,
+            stake_amount=stake_amount,
+            amount=amount,
+            open_rate=rate,
+            current_rate=rate,
+        ))
 
         # Log T+1 info for stocks
         if mt == MarketType.STOCK:
@@ -636,6 +645,7 @@ class PositionManager:
         # Update wallet - return stake + profit (outside lock to avoid deadlock)
         total_return = trade.stake_amount + profit
         self._wallets.add_amount(self._config.stake_currency, total_return)
+        self._wallets.unregister_trade(trade.pair)
 
         logger.info(
             f"Closed trade: {trade.pair} @ {rate}, "
@@ -891,6 +901,9 @@ class PositionManager:
             except Exception:
                 pass
             trade.update_rate(fill_rate)
+
+        # Keep the wallet's slot-tracking stake in sync after the add.
+        self._wallets.update_trade_stake(trade.pair, trade.stake_amount)
 
         logger.info(
             f"Adjusted position for {trade.pair}: +{amount:.0f} @ {fill_rate}, "

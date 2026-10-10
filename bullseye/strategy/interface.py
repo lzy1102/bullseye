@@ -631,14 +631,29 @@ def timeframe_to_minutes(timeframe: str) -> int:
         return 60  # Default 1 hour
 
 
-def timeframe_to_next_date(timeframe: str) -> datetime:
-    """Get the next date for a given timeframe"""
-    return datetime.now(timezone.utc)
+def _timeframe_aligned(timeframe: str, date: Optional[datetime], forward: bool) -> datetime:
+    """Align `date` to the nearest timeframe boundary (UTC-epoch based).
+
+    Freqtrade semantics: the boundary grid is anchored at the Unix epoch,
+    so 1h boundaries fall on the hour and 1d boundaries on 00:00 UTC.
+    """
+    if date is None:
+        date = datetime.now(timezone.utc)
+    step = max(1, timeframe_to_minutes(timeframe)) * 60
+    ts = int(date.timestamp())
+    aligned = (ts // step + 1) * step if forward else (ts // step) * step
+    tz = date.tzinfo or timezone.utc
+    return datetime.fromtimestamp(aligned, tz=tz)
 
 
-def timeframe_to_prev_date(timeframe: str) -> datetime:
-    """Get the previous date for a given timeframe"""
-    return datetime.now(timezone.utc)
+def timeframe_to_next_date(timeframe: str, date: Optional[datetime] = None) -> datetime:
+    """Next candle open time for a timeframe (defaults to now, UTC)."""
+    return _timeframe_aligned(timeframe, date, forward=True)
+
+
+def timeframe_to_prev_date(timeframe: str, date: Optional[datetime] = None) -> datetime:
+    """Current candle open time for a timeframe (defaults to now, UTC)."""
+    return _timeframe_aligned(timeframe, date, forward=False)
 
 
 def stoploss_from_open(

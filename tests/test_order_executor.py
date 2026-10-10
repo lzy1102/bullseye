@@ -120,6 +120,82 @@ class TestLiveEntry:
         assert not pm.has_open_trade("BTC/USDT")
 
 
+class TestLiveShortAndDCA:
+    def test_short_entry_routes_short_direction(self):
+        gw = ScriptedGateway(
+            [make_order(Status.ALLTRADED, traded=1.0, price=100.0)]
+        )
+        executor, pm, _ = make_executor(gateway=gw)
+
+        trade = executor.execute_entry("BTC/USDT", rate=100.0, side="short")
+
+        assert trade is not None
+        assert trade.is_short
+        # Direction was hardcoded LONG before: short signals opened longs.
+        assert gw.sent[0]["direction"].value == "short"
+        assert gw.sent[0]["offset"].value == "open"
+
+    def test_live_dca_routes_through_gateway(self):
+        from bullseye.strategy.interface import IStrategy
+
+        class DcaStrategy(IStrategy):
+            position_adjustment_enable = True
+
+            def adjust_trade_position(self, **kwargs):
+                return 50.0
+
+        gw = ScriptedGateway(
+            [make_order(Status.ALLTRADED, traded=1.0, price=100.0)]
+        )
+        executor, pm, _ = make_executor(gateway=gw)
+        executor.set_strategy(DcaStrategy())
+
+        trade = executor.execute_entry("BTC/USDT", rate=100.0)
+        assert trade is not None
+        assert trade.stake_amount == pytest.approx(100.0)
+
+        # Script the add fill.
+        gw.script = [make_order(Status.ALLTRADED, traded=0.5, price=100.0)]
+        gw.poll_idx = 0
+        booked = executor.execute_adjust(trade, rate=100.0)
+
+        assert booked == pytest.approx(50.0)
+        assert trade.stake_amount == pytest.approx(150.0)
+        # The add went out as a real gateway buy order.
+        assert gw.sent[-1]["direction"].value == "long"
+        assert gw.sent[-1]["volume"] == pytest.approx(0.5)
+
+    def test_wallet_sync_seeds_live_balance(self):
+        config = Config()
+        config.set("dry_run", False)
+        config.set("stake_currency", "CNY")
+        config.set("tradable_balance_ratio", 1.0)
+        wallets = Wallets(config)
+        assert wallets.get_free("CNY") == pytest.approx(0.0)
+
+        class Account:
+            currency = "CNY"
+            balance = 50000.0
+            available = 48000.0
+            frozen = 2000.0
+
+        wallets.sync_from_account(Account())
+        assert wallets.get_free("CNY") == pytest.approx(48000.0)
+        assert wallets.get_total_stake_amount() == pytest.approx(50000.0)
+
+    def test_open_close_updates_wallet_slots(self):
+        executor, pm, wallets = make_executor(dry_run=True)
+        trade = executor.execute_entry("BTC/USDT", rate=100.0)
+        assert trade is not None
+        # Previously nothing registered the position, so slot math
+        # (unlimited staking) always saw zero open trades.
+        assert len(wallets._open_trades) == 1
+        assert wallets._open_trades[0].stake_amount == pytest.approx(100.0)
+
+        pm.close_trade(trade, 100.0, "test_close")
+        assert len(wallets._open_trades) == 0
+
+
 class TestLiveExit:
     def _open_trade(self, executor, pm):
         gw = ScriptedGateway([make_order(Status.ALLTRADED, traded=1.0, price=100.0)])

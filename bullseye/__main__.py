@@ -639,7 +639,12 @@ def hyperopt_show(index: Optional[int], file: Optional[str]):
 
         console.print(f"[blue]Strategy:[/blue] {data.get('strategy', 'Unknown')}")
         console.print(f"[blue]Loss:[/blue] {data.get('best_loss', 0):.6f}")
-        console.print(f"[blue]Epochs:[/blue] {data.get('epochs', 0)}")
+        # Export files store the count as `total_epochs`; the old lookup
+        # for `epochs` always displayed 0.
+        console.print(
+            f"[blue]Epochs:[/blue] "
+            f"{data.get('total_epochs', data.get('epochs', 0))}"
+        )
 
         best = data.get('best_params', {})
         if best:
