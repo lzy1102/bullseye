@@ -29,6 +29,7 @@ class BacktestTrade:
     is_short: bool = False
     leverage: float = 1.0
     trade_duration: float = 0.0
+    entries: int = 1  # 1 + DCA adds (nr_of_successful_entries)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -49,6 +50,7 @@ class BacktestTrade:
             "is_short": self.is_short,
             "leverage": self.leverage,
             "trade_duration_hours": self.trade_duration,
+            "entries": self.entries,
         }
 
 
@@ -714,6 +716,7 @@ class BacktestResult:
                 is_short=t_data.get("is_short", False),
                 leverage=t_data.get("leverage", 1.0),
                 trade_duration=t_data.get("trade_duration_hours", 0),
+                entries=t_data.get("entries", 1),
             )
             if t_data.get("entry_date"):
                 trade.entry_date = datetime.fromisoformat(t_data["entry_date"])

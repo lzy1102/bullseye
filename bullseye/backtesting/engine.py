@@ -2147,6 +2147,7 @@ class BacktestEngine:
             is_short=trade.is_short,
             leverage=trade.leverage,
             trade_duration=duration_hours,
+            entries=trade.nr_of_successful_entries,
         )
         closed_bt_trades.append(bt_trade)
 
