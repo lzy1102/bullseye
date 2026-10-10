@@ -128,6 +128,39 @@ class TestRecursiveAnalysis:
         assert result['bias_detected'] is False
         assert len(result['sensitive_indicators']) == 0
 
+    def test_recursive_analysis_slice_alignment_no_false_positive(self):
+        """Deterministic non-recursive signals must not be flagged.
+
+        Regression: the old comparison sliced the head of the full-run
+        signals against the head of the truncated-run signals (different
+        rows) and reported bias for almost anything.
+        """
+        import pandas as pd
+        from datetime import datetime, timedelta
+
+        analysis = RecursiveAnalysis()
+
+        class StepStrategy(MockStrategy):
+            def populate_entry_trend(self, dataframe, metadata):
+                dataframe['enter_long'] = 0
+                dataframe.loc[dataframe.index >= 60, 'enter_long'] = 1
+                return dataframe
+
+        dates = pd.date_range(
+            start=datetime.now() - timedelta(days=100), periods=100, freq='1h'
+        )
+        df = pd.DataFrame({
+            'date': dates,
+            'open': [100.0] * 100,
+            'high': [101.0] * 100,
+            'low': [99.0] * 100,
+            'close': [100.0] * 100,
+            'volume': [1000.0] * 100,
+        })
+        result = analysis.analyze(StepStrategy(), df, 'ETH/USDT')
+        assert result['bias_detected'] is False
+        assert result['sensitive_indicators'] == []
+
     def test_recursive_analysis_with_bias(self):
         """Test recursive analysis with bias detected."""
         import pandas as pd

@@ -77,25 +77,36 @@ class RecursiveAnalysis:
             bias_detected = False
             sensitive_indicators = []
 
-            # Get common index (intersection of all periods)
-            common_start = max(startup_periods)
-            if len(dataframe) > common_start:
-                # Compare entry signals
-                base_signals = signals_by_period.get(0, {}).get('entry', [])
+            # Compare entry signals on the common (overlapping) region,
+            # aligned by row index. The previous slice comparison compared
+            # different rows (full-run head vs truncated-run head) and
+            # reported recursive bias for nearly every strategy.
+            base_signals = signals_by_period.get(0, {}).get('entry')
+            if (
+                base_signals is not None
+                and len(base_signals) > 0
+                and hasattr(base_signals, "index")
+            ):
                 for startup, signals in signals_by_period.items():
                     if startup == 0:
                         continue
-                    current_signals = signals.get('entry', [])
-                    if len(base_signals) > 0 and len(current_signals) > 0:
-                        # Compare overlapping region
-                        min_len = min(len(base_signals), len(current_signals))
-                        if not base_signals[:min_len].equals(current_signals[:min_len]):
-                            bias_detected = True
-                            sensitive_indicators.append({
-                                'indicator': 'enter_long',
-                                'startup': startup,
-                                'type': 'recursive'
-                            })
+                    current_signals = signals.get('entry')
+                    if current_signals is None or len(current_signals) == 0:
+                        continue
+                    common_idx = base_signals.index.intersection(
+                        current_signals.index
+                    )
+                    if len(common_idx) == 0:
+                        continue
+                    if not base_signals.reindex(common_idx).equals(
+                        current_signals.reindex(common_idx)
+                    ):
+                        bias_detected = True
+                        sensitive_indicators.append({
+                            'indicator': 'enter_long',
+                            'startup': startup,
+                            'type': 'recursive'
+                        })
 
             return {
                 'pair': pair,
