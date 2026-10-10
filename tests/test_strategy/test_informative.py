@@ -40,6 +40,21 @@ class TestMergeInformativePair:
         assert "date_merge_1h" in merged.columns or "date_1h" in merged.columns
         assert len(merged) == len(df)  # no rows dropped/added
 
+    def test_second_merge_same_tf_keeps_bare_column_names(self):
+        """Two @informative methods on the same timeframe must not leave
+        _x/_y suffix collisions (breaks strategy lookups like rsi_1h)."""
+        df, tf = make_frames()
+        tf2 = tf.copy()
+        tf2["extra"] = [1.0, 2.0, 3.0, 4.0]
+        merged = merge_informative_pair(df, tf, "5m", "1h")
+        merged2 = merge_informative_pair(merged, tf2, "5m", "1h")
+        assert "close_1h" in merged2.columns
+        assert "extra_1h" in merged2.columns
+        assert not any(
+            c.endswith("_x") or c.endswith("_y") for c in merged2.columns
+        )
+        assert merged2["close_1h"].dropna().iloc[0] == pytest.approx(10.0)
+
     def test_no_lookahead_before_first_candle_close(self):
         """A 1h candle stamped 10:00 covers 10:00-11:00; rows before 11:00
         must not see it."""

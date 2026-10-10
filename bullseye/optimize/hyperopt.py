@@ -877,29 +877,10 @@ class HyperoptEngine:
     ) -> Dict[str, Any]:
         """Apply a `YYYYMMDD-YYYYMMDD` filter to in-memory frames.
 
-        Disk-loaded data is filtered inside `BacktestEngine._load_data`;
-        `data=` injection previously ignored `timerange` entirely, which
-        would silently corrupt walk-forward windows.
+        Delegates to the engine helper so walk-forward windows and
+        in-memory backtests share identical, end-of-day-inclusive bounds.
         """
-        if not timerange:
-            return data
-        import pandas as pd
-
-        parts = timerange.split("-")
-        start = pd.Timestamp(parts[0]) if len(parts) > 0 and parts[0] else None
-        end = pd.Timestamp(parts[1]) if len(parts) > 1 and parts[1] else None
-        out: Dict[str, Any] = {}
-        for pair, df in data.items():
-            if df is None or getattr(df, "empty", False):
-                continue
-            f = df
-            if start is not None:
-                f = f[f["date"] >= start]
-            if end is not None:
-                f = f[f["date"] <= end]
-            if not f.empty:
-                out[pair] = f
-        return out
+        return BacktestEngine._filter_frames_by_timerange(data, timerange)
 
     def _load_full_data(
         self,
@@ -927,8 +908,6 @@ class HyperoptEngine:
         Folds whose train side is shorter than `min_train_candles`
         (unified count) are skipped.
         """
-        import pandas as pd
-
         all_dates = sorted(
             {dt for df in data.values() for dt in df["date"]}
         )

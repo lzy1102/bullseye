@@ -336,6 +336,10 @@ class Wallets:
             # Unlimited stake - calculate based on available balance
             available = self.get_available_stake_amount()
 
+            # -1 = unlimited: no slot reservation, size from balance.
+            if self._max_open_trades < 0:
+                return available
+
             # Count open trades and reserve space for remaining trades
             open_trades_count = len(self._open_trades)
             remaining_slots = max(0, self._max_open_trades - open_trades_count - 1)
@@ -400,8 +404,10 @@ class Wallets:
         Check if a new trade can be opened.
 
         Returns:
-            True if max_open_trades not reached
+            True if max_open_trades not reached (-1 = unlimited)
         """
+        if self._max_open_trades < 0:
+            return True
         return len(self._open_trades) < self._max_open_trades
 
     def update_trade_rate(self, pair: str, current_rate: float) -> None:

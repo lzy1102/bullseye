@@ -357,7 +357,8 @@ def download_data_cmd(ctx, exchange: Optional[str], market: str, datafeed: Optio
 @click.option('--stake-amount', type=float, help='Stake amount per trade')
 @click.option('--initial-balance', type=float, default=1000, help='Initial balance')
 @click.option('--max-open-trades', type=int, help='Max concurrent open trades')
-@click.option('--fee', type=float, default=0.001, help='Fee rate')
+@click.option('--fee', type=float, default=None,
+              help='Flat fee rate; default: config (backtest.fee / structured A-share model)')
 @click.option('--slippage', type=float, default=None, help='Adverse fill slippage (e.g. 0.0005)')
 @click.option('--jobs', type=int, default=1, help='Parallel backtest workers (-1 = all CPUs)')
 @click.option('--optimizer', type=str, default='random',

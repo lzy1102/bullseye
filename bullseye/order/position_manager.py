@@ -29,6 +29,7 @@ from bullseye.order.settlement import (
     detect_settlement_rule,
     is_t1_market,
     get_settlement_date as calc_settlement_date,
+    settlement_pending,
 )
 
 logger = logging.getLogger(__name__)
@@ -181,11 +182,13 @@ class LocalTrade:
 
         # Compare in the settlement date's timezone: live open dates may be
         # tz-aware (e.g. UTC from ccxt) while datetime.now() is naive.
+        # Calendar-day comparison keeps live and backtest口径 identical
+        # (see settlement_pending for the daily-bar rationale).
         if self.settlement_date.tzinfo is not None:
             now = datetime.now(self.settlement_date.tzinfo)
         else:
             now = datetime.now()
-        return now >= self.settlement_date
+        return not settlement_pending(now, self.settlement_date)
 
     @property
     def trading_mode(self) -> str:
@@ -477,8 +480,10 @@ class PositionManager:
             return pair in self._trades
 
     def can_open_trade(self) -> bool:
-        """Check if a new trade can be opened."""
+        """Check if there's an open trade slot (-1 = unlimited)."""
         with self._lock:
+            if self._max_open_trades < 0:
+                return True
             return len(self._trades) < self._max_open_trades
 
     def get_open_trade_count(self) -> int:
@@ -874,6 +879,17 @@ class PositionManager:
             trade.stake_amount += add_stake
             trade.fee_open += fee
             trade.nr_of_successful_entries += 1
+            # Each add lot carries its own T+1 clock (parity with the
+            # backtest engine).
+            try:
+                new_settle = calc_settlement_date(
+                    datetime.now(), trade.pair, trade.exchange
+                )
+                if (trade.settlement_date is None
+                        or new_settle > trade.settlement_date):
+                    trade.settlement_date = new_settle
+            except Exception:
+                pass
             trade.update_rate(fill_rate)
 
         logger.info(

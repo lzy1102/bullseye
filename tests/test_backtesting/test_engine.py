@@ -126,6 +126,12 @@ def run_flat_backtest(strategy_cls, data, slippage: float = 0.0,
     config.set("stake_amount", stake_amount)
     config.set("max_open_trades", 1)
 
+    # Mirror BacktestEngine.run(): the settlement detector is global
+    # state, so initialize it here too (otherwise a previous engine.run
+    # with a manual t1 config would leak into this helper's run).
+    from bullseye.order.settlement import init_settlement_detector
+    init_settlement_detector(config.settlement or {})
+
     strategy = strategy_cls()
     pairlist = list(data.keys())
     wallets = Wallets(config, initial_balance=initial_balance)
@@ -392,6 +398,15 @@ class TestBacktestEngine:
 class TestSettlementRestriction:
     """T+1 settlement must block same-day exits in backtesting."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_settlement_detector(self):
+        # The detector is process-global; reset to auto-detect around
+        # every test so a manual-t1 test cannot poison crypto cases.
+        from bullseye.order.settlement import init_settlement_detector
+        init_settlement_detector({})
+        yield
+        init_settlement_detector({})
+
     def test_t1_stock_exit_blocked_until_settlement_date(self):
         """A-share pair: exit signals before the settlement date must be ignored."""
         # Stake 20000 @ flat 100 = 200 shares = 2 lots (A-share rule;
@@ -408,12 +423,123 @@ class TestSettlementRestriction:
         from bullseye.order.settlement import get_settlement_date
         expected_settlement = get_settlement_date(trade.entry_date, "000001.SZ")
 
-        # Exit signal fired on every candle yet exit only happened after T+1
+        # Exit signal fired on every candle yet exit only happened after T+1.
+        # The gate is calendar-day based (see settlement_pending): entry on
+        # 2024-01-01 -> first sellable bar is the first bar of 2024-01-02.
         assert trade.exit_reason == "exit_signal"
-        assert trade.exit_date >= expected_settlement
-        # Entry at 2024-01-01 10:00 -> settlement 2024-01-02 09:30
-        # -> first sellable hourly candle is 2024-01-02 10:00 (~24h hold)
-        assert trade.trade_duration >= 23.0
+        assert trade.exit_date.date() >= expected_settlement.date()
+        assert trade.trade_duration >= 13.0
+
+    def test_daily_bars_settle_next_day_not_day_after(self):
+        """Daily bars are stamped 00:00; T+1 must still sell on the next day.
+
+        With datetime comparison the settlement timestamp (next session
+        09:30) was later than the next daily bar (00:00), so daily
+        backtests effectively settled at T+2.
+        """
+        n = 6
+        dates = pd.date_range("2024-01-01", periods=n, freq="1d")
+        data = {"600036.SH": pd.DataFrame({
+            "date": dates, "open": [10.0] * n, "high": [10.0] * n,
+            "low": [10.0] * n, "close": [10.0] * n,
+            "volume": [10000.0] * n,
+        })}
+
+        class DailyT1Strategy(IStrategy):
+            timeframe = "1d"
+            startup_candle_count = 1
+            minimal_roi = {}
+            stoploss = -0.5
+
+            def populate_indicators(self, dataframe, metadata):
+                return dataframe
+
+            def populate_entry_trend(self, dataframe, metadata):
+                dataframe["enter_long"] = 0
+                dataframe.loc[dataframe.index == 1,
+                              ["enter_long", "enter_tag"]] = (1, "d1")
+                return dataframe
+
+            def populate_exit_trend(self, dataframe, metadata):
+                dataframe["exit_long"] = 0
+                dataframe.loc[dataframe.index == 2,
+                              ["exit_long", "exit_tag"]] = (1, "d2")
+                return dataframe
+
+        config = Config()
+        config.set("dry_run_wallet", 100000)
+        config.set("stake_amount", 20000)
+        config.set("max_open_trades", 1)
+        config.set("settlement", "t1")
+        engine = BacktestEngine(config)
+        result = engine.run(
+            strategy_class=DailyT1Strategy, pairlist=["600036.SH"],
+            timeframe="1d", data=data, initial_balance=100000,
+        )
+        assert len(result.trades) == 1
+        trade = result.trades[0]
+        # Buy 01-02, exit signal 01-03: T+1 allows selling that same day.
+        assert trade.entry_date == dates[1]
+        assert trade.exit_reason != "force_exit"
+        assert trade.exit_date == dates[2]
+
+    def test_dca_refreshes_settlement(self):
+        """A DCA add carries its own T+1 clock and blocks same-day exits."""
+        n = 6
+        dates = pd.date_range("2024-01-01", periods=n, freq="1d")
+        data = {"600036.SH": pd.DataFrame({
+            "date": dates, "open": [10.0] * n, "high": [10.0] * n,
+            "low": [10.0] * n, "close": [10.0] * n,
+            "volume": [10000.0] * n,
+        })}
+
+        class DcaThenExitStrategy(IStrategy):
+            timeframe = "1d"
+            startup_candle_count = 1
+            minimal_roi = {}
+            stoploss = -0.5
+            position_adjustment_enable = True
+
+            def populate_indicators(self, dataframe, metadata):
+                return dataframe
+
+            def populate_entry_trend(self, dataframe, metadata):
+                dataframe["enter_long"] = 0
+                dataframe.loc[dataframe.index == 1,
+                              ["enter_long", "enter_tag"]] = (1, "d1")
+                return dataframe
+
+            def populate_exit_trend(self, dataframe, metadata):
+                dataframe["exit_long"] = 0
+                dataframe.loc[dataframe.index >= 2,
+                              ["exit_long", "exit_tag"]] = (1, "exit")
+                return dataframe
+
+            def adjust_trade_position(self, **kwargs):
+                # One add on the day after entry (index 2).
+                trade = kwargs["trade"]
+                if trade.nr_of_successful_entries == 1:
+                    return 5000.0
+                return None
+
+        config = Config()
+        config.set("dry_run_wallet", 100000)
+        config.set("stake_amount", 20000)
+        config.set("max_open_trades", 1)
+        config.set("settlement", "t1")
+        engine = BacktestEngine(config)
+        result = engine.run(
+            strategy_class=DcaThenExitStrategy, pairlist=["600036.SH"],
+            timeframe="1d", data=data, initial_balance=100000,
+        )
+        assert len(result.trades) == 1
+        trade = result.trades[0]
+        assert trade.entries == 2
+        # Buy 01-02, add 01-03: the add resets settlement to 01-04, so the
+        # same-day exit signal on 01-03 must be ignored and the trade
+        # closes on 01-04.
+        assert trade.exit_reason != "force_exit"
+        assert trade.exit_date == dates[3]
 
     def test_t0_crypto_exits_immediately(self):
         """Crypto pair: no settlement restriction - round-trips every candle."""
@@ -992,10 +1118,28 @@ class TestGridAdjust:
     """adjust_trade_position averaging-down and never-sell-red exits."""
 
     def _dip_data(self):
+        """Prices shaped for the CURRENT GridBank10 semantics.
+
+        Phase 1 (0-59): rise 20->30.5 so the SMA20/SMA60 gate opens.
+        Phase 2 (60-89): flat entry zone - must NOT rise +5% net, or the
+            trailing stop arms and the later dip exits instead of DCA.
+        Phase 3 (90-114): fall 30.4->22, triggers 5%-step DCA adds.
+        Phase 4 (115-184): rise 22->46, trailing stop arms and ratchets.
+        Phase 5 (185-199): fall 46->41, pops the trailing stop.
+        The old dataset predated the trend gate (no entry happened) and
+        the trailing exit.
+        """
         import numpy as np
 
-        n = 120
-        px = np.concatenate([np.linspace(40, 28, 60), np.linspace(28, 42, 60)])
+        px = np.concatenate([
+            np.linspace(20.0, 30.5, 60),
+            np.linspace(30.5, 30.4, 30),
+            np.linspace(30.4, 22.0, 25),
+            np.linspace(22.0, 46.0, 70),
+            np.linspace(46.0, 41.0, 15),
+        ])
+        n = len(px)
+        assert n == 200
         dates = pd.date_range("2024-01-01", periods=n, freq="1h")
         return {"600036.SH": pd.DataFrame({
             "date": dates, "open": px, "high": px * 1.005,
@@ -1350,7 +1494,11 @@ class TestDividends:
             "low": [10.0] * 30, "close": [10.0] * 30,
             "volume": [1000.0] * 30,
         })}
-        ex_date = dates[15].date().isoformat()
+        # Ex-date on the second day: the position (opened 01-01) is the
+        # holder of record. Same-day holds are NOT entitled per A-share
+        # rules (record date = previous close), which is why the ex-date
+        # must be a later day than the entry.
+        ex_date = dates[25].date().isoformat()
         config = Config()
         config.set("dry_run_wallet", 100000)
         config.set("stake_amount", 20000)
@@ -1378,6 +1526,179 @@ class TestDividends:
         ])
         assert len(entries) == 1
         assert entries[0][1] == pytest.approx(0.5)
+
+    def _two_day_data(self):
+        dates = pd.date_range("2024-01-01", periods=30, freq="1h")
+        return dates, {"000001.SZ": pd.DataFrame({
+            "date": dates, "open": [10.0] * 30, "high": [10.0] * 30,
+            "low": [10.0] * 30, "close": [10.0] * 30,
+            "volume": [1000.0] * 30,
+        })}
+
+    def _run_indexed(self, entry_idx, exit_idx, data, dividends):
+        class IndexedStrategy(IStrategy):
+            timeframe = "1h"
+            startup_candle_count = 5
+            minimal_roi = {}
+            stoploss = -1.0
+
+            def populate_indicators(self, dataframe, metadata):
+                return dataframe
+
+            def populate_entry_trend(self, dataframe, metadata):
+                dataframe["enter_long"] = 0
+                if entry_idx is not None:
+                    dataframe.loc[dataframe.index == entry_idx,
+                                  ["enter_long", "enter_tag"]] = (1, "in")
+                return dataframe
+
+            def populate_exit_trend(self, dataframe, metadata):
+                dataframe["exit_long"] = 0
+                if exit_idx is not None:
+                    dataframe.loc[dataframe.index == exit_idx,
+                                  ["exit_long", "exit_tag"]] = (1, "out")
+                return dataframe
+
+        config = Config()
+        config.set("dry_run_wallet", 100000)
+        config.set("stake_amount", 20000)
+        config.set("max_open_trades", 1)
+        engine = BacktestEngine(config)
+        return engine.run(
+            strategy_class=IndexedStrategy, pairlist=["000001.SZ"],
+            timeframe="1h", data=data, initial_balance=100000,
+            dividends=dividends,
+        )
+
+    def test_same_day_entry_not_credited(self):
+        """Buying ON the ex-date (entry bar) is not a holder of record."""
+        dates, data = self._two_day_data()
+        ex_date = dates[15].date().isoformat()
+        result = self._run_indexed(
+            15, None, data,
+            {"000001.SZ": [{"ex_date": ex_date, "cash_div": 0.5}]},
+        )
+        assert result.config["dividends_paid"] == 0.0
+
+    def test_same_day_exit_keeps_dividend(self):
+        """Selling ON the ex-date still pays: held at the record date."""
+        dates, data = self._two_day_data()
+        ex_date = dates[25].date().isoformat()
+        result = self._run_indexed(
+            5, 25, data,
+            {"000001.SZ": [{"ex_date": ex_date, "cash_div": 0.5}]},
+        )
+        # 2000 shares x 0.5 x (1 - 0.1 tax); the old code credited
+        # dividends after exits, so a same-day seller lost the payout.
+        assert result.config["dividends_paid"] == pytest.approx(900.0)
+        assert result.trades[0].exit_reason != "force_exit"
+
+    def test_sidecar_dividends_gated_by_adjust(self, tmp_path):
+        """Adjusted (qfq/hfq) sidecars must not credit cash again."""
+        config = Config()
+        config.set("datadir", str(tmp_path))
+        engine = BacktestEngine(config)
+        # No sidecar + default declared qfq -> skip (safe against double count)
+        assert engine._dividend_credit_allowed("000001.SZ", "1d") is False
+
+        meta = tmp_path / "000001.SZ-1d.meta.json"
+        meta.write_text('{"adjust": "qfq"}', encoding="utf-8")
+        assert engine._dividend_credit_allowed("000001.SZ", "1d") is False
+
+        meta.write_text('{"adjust": "hfq"}', encoding="utf-8")
+        assert engine._dividend_credit_allowed("000001.SZ", "1d") is False
+
+        meta.write_text('{"adjust": "none"}', encoding="utf-8")
+        assert engine._dividend_credit_allowed("000001.SZ", "1d") is True
+
+
+class TestLiquidation:
+    """Margin wipe-out triggers at -100% of the leveraged ratio."""
+
+    def _run(self, crash_to, leverage):
+        n = 60
+        px = [100.0] * 40 + [crash_to] * 20
+        dates = pd.date_range("2024-01-01", periods=n, freq="1h")
+        data = {"BTC/USDT": pd.DataFrame({
+            "date": dates, "open": px, "high": px, "low": px,
+            "close": px, "volume": [1000.0] * n,
+        })}
+
+        class LevStrategy(FlatTestStrategy):
+            def leverage(self, pair, current_time, current_rate,
+                         proposed_leverage, max_leverage, entry_tag, side,
+                         **kwargs):
+                return leverage
+
+        config = Config()
+        config.set("dry_run_wallet", 1000)
+        config.set("stake_amount", 100)
+        engine = BacktestEngine(config)
+        return engine.run(
+            strategy_class=LevStrategy, pairlist=["BTC/USDT"],
+            timeframe="1h", data=data, initial_balance=1000,
+            stake_amount=100,
+        )
+
+    def test_two_x_not_liquidated_at_minus_26pct(self):
+        # 2x, price -26% -> leveraged ratio -52%: solvent (old code
+        # liquidated at -50% because it divided by leverage again).
+        result = self._run(74.0, 2.0)
+        assert result.trades
+        assert all(t.exit_reason != "liquidation" for t in result.trades)
+
+    def test_two_x_liquidated_at_minus_60pct(self):
+        # 2x, price -60% -> leveraged ratio -120%: margin wiped.
+        result = self._run(40.0, 2.0)
+        assert any(t.exit_reason == "liquidation" for t in result.trades)
+
+
+class TestMaxOpenTradesUnlimited:
+    """Freqtrade semantics: max_open_trades -1 means unlimited."""
+
+    def test_minus_one_opens_every_pair(self):
+        data = make_flat_data(
+            {"BTC/USDT": 30, "ETH/USDT": 30, "XRP/USDT": 30}
+        )
+        config = Config()
+        config.set("dry_run_wallet", 1000)
+        config.set("stake_amount", 100)
+        engine = BacktestEngine(config)
+        result = engine.run(
+            strategy_class=FlatTestStrategy,
+            pairlist=["BTC/USDT", "ETH/USDT", "XRP/USDT"],
+            timeframe="1h", data=data, initial_balance=1000,
+            max_open_trades=-1, stake_amount=100,
+        )
+        # -1 previously meant len(open) < -1 -> zero trades silently.
+        assert len(result.trades) == 3
+
+
+class TestInMemoryTimerange:
+    """The `data=` injection path must honor `timerange`."""
+
+    def test_data_argument_honors_timerange(self):
+        n = 96
+        dates = pd.date_range("2024-01-01", periods=n, freq="1h")
+        data = {"BTC/USDT": pd.DataFrame({
+            "date": dates, "open": [100.0] * n, "high": [100.0] * n,
+            "low": [100.0] * n, "close": [100.0] * n,
+            "volume": [1000.0] * n,
+        })}
+        config = Config()
+        config.set("dry_run_wallet", 1000)
+        config.set("stake_amount", 100)
+        engine = BacktestEngine(config)
+        result = engine.run(
+            strategy_class=FlatTestStrategy, pairlist=["BTC/USDT"],
+            timeframe="1h", data=data, initial_balance=1000,
+            timerange="20240103-20240103",
+        )
+        # The window filters in-memory frames too; previously the whole
+        # 4-day frame traded (entry on 01-01) despite the window.
+        assert result.trades
+        day = pd.Timestamp("2024-01-03").date()
+        assert all(t.entry_date.date() == day for t in result.trades)
 
 
 class TestTuShareDividends:

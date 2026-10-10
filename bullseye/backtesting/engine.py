@@ -26,7 +26,12 @@ from bullseye.exceptions import (
 from bullseye.order.position_manager import LocalTrade, PositionManager, MarketType
 from bullseye.order.order_executor import OrderExecutor
 from bullseye.order.fees import FeeModel
-from bullseye.order.settlement import SettlementType, init_settlement_detector
+from bullseye.order.settlement import (
+    SettlementType,
+    get_settlement_date,
+    init_settlement_detector,
+    settlement_pending,
+)
 from bullseye.strategy.interface import (
     IStrategy,
     collect_informative_specs,
@@ -337,6 +342,32 @@ class BacktestEngine:
             logger.warning(f"Ignoring unreadable dividends file {div_path}: {e}")
             return []
 
+    def _dividend_credit_allowed(self, pair: str, timeframe: str) -> bool:
+        """Whether sidecar cash dividends should be credited for a pair.
+
+        Only unadjusted (raw) stock series qualify; adjusted files
+        (qfq/hfq) and files without a sidecar (declared `stock.adjust`
+        defaults to qfq) keep dividends embedded in the price series.
+        """
+        if self._detect_market_type(pair) != MarketType.STOCK:
+            return False
+        declared = self._normalize_adjust(self._config.get("stock.adjust", "qfq"))
+        meta_path = self._find_data_file(
+            f"{pair.replace('/', '_')}-{timeframe}.meta.json"
+        )
+        if meta_path is None:
+            return declared is None
+        try:
+            import json as _json
+
+            with open(meta_path, "r", encoding="utf-8") as f:
+                file_adjust = self._normalize_adjust(
+                    (_json.load(f) or {}).get("adjust")
+                )
+        except Exception:
+            return declared is None
+        return file_adjust is None
+
     def run(
         self,
         strategy_class: Optional[Type[IStrategy]] = None,
@@ -443,6 +474,10 @@ class BacktestEngine:
         if stake_amount is None and not unlimited_stake:
             stake_amount = self._config.stake_amount
         max_open_trades = max_open_trades or self._config.max_open_trades
+        # Freqtrade semantics: -1 means unlimited. The engine holds at most
+        # one trade per pair, so the practical cap is len(pairlist).
+        if max_open_trades is not None and int(max_open_trades) < 0:
+            max_open_trades = len(pairlist)
         initial_balance = initial_balance or self._config.dry_run_wallet
         # Refresh structured model from current config (Config may have changed
         # after engine construction).
@@ -489,10 +524,12 @@ class BacktestEngine:
                      f"pairs={pairlist}, timeframe={timeframe}")
 
         # Apply settlement configuration (simple "t0"/"t1" string or dict)
-        # so LocalTrade auto-detection honors user settings in backtests too
+        # so LocalTrade auto-detection honors user settings in backtests too.
+        # ALWAYS reinitialize: the detector is process-global, so skipping
+        # when unconfigured leaked a previous run's manual mode (e.g. a t1
+        # backtest made every later crypto run treat BTC as T+1).
         settlement_cfg = self._config.settlement
-        if settlement_cfg:
-            init_settlement_detector(settlement_cfg)
+        init_settlement_detector(settlement_cfg if settlement_cfg else {})
 
         # Load data (in-memory injection takes precedence over disk)
         from_disk = data is None
@@ -507,6 +544,11 @@ class BacktestEngine:
         # loading applies, so unsorted/duplicated frames silently misaligned
         # signals via positional indexing.
         data = self._clean_data(data)
+        # In-memory data must honor timerange too: validation / walk-forward
+        # pass frames directly, and ignoring the window silently leaked the
+        # training range into "out-of-sample" runs.
+        if not from_disk and timerange:
+            data = self._filter_frames_by_timerange(data, timerange)
         if not data:
             logger.error("No data available for backtesting")
             return BacktestResult(strategy_name=strategy.__class__.__name__)
@@ -525,7 +567,16 @@ class BacktestEngine:
                 for pair, entries in dividends.items()
             }
         else:
-            dividend_map = {pair: self._load_dividends(pair) for pair in data}
+            # Sidecar dividends apply to UNADJUSTED series only: qfq/hfq
+            # prices are already continuous across ex-dates (the price
+            # return embeds the payout), so cash crediting there double
+            # counts. Explicit `dividends=` stays caller-responsibility.
+            dividend_map = {
+                pair: (self._load_dividends(pair)
+                       if self._dividend_credit_allowed(pair, timeframe)
+                       else [])
+                for pair in data
+            }
         try:
             dividend_tax = float(self._config.get("backtest.dividend_tax", 0.1))
         except (TypeError, ValueError):
@@ -838,6 +889,13 @@ class BacktestEngine:
             if end_date is not None:
                 end_naive = pd.Timestamp(end_date).tz_localize(None) \
                     if getattr(pd.Timestamp(end_date), "tzinfo", None) else end_date
+                # A date-only end bound (00:00) must include that whole
+                # trading day; previously intraday frames silently dropped
+                # the final day while daily frames kept it.
+                end_naive = pd.Timestamp(end_naive)
+                if end_naive == end_naive.normalize():
+                    end_naive = end_naive + pd.Timedelta(days=1) \
+                        - pd.Timedelta(nanoseconds=1)
                 df = df[df["date"] <= end_naive]
 
             df = df.sort_values("date").reset_index(drop=True)
@@ -846,6 +904,41 @@ class BacktestEngine:
                 data[pair] = df
 
         return self._clean_data(data)
+
+    @staticmethod
+    def _filter_frames_by_timerange(
+        data: Dict[str, Any], timerange: Optional[str]
+    ) -> Dict[str, Any]:
+        """Apply a `YYYYMMDD[-YYYYMMDD]` window to in-memory frames.
+
+        Shared by the engine (in-memory `data=` runs) and the hyperopt
+        walk-forward splitter. An end bound that is exactly midnight is
+        treated as end-of-day so date-only windows include the final
+        trading day for every timeframe.
+        """
+        if not timerange:
+            return data
+        parts = timerange.split("-")
+        start = pd.Timestamp(parts[0]) if len(parts) > 0 and parts[0] else None
+        end = None
+        if len(parts) > 1 and parts[1]:
+            end = pd.Timestamp(parts[1])
+            if end == end.normalize():
+                end = end + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
+        out: Dict[str, Any] = {}
+        for pair, df in data.items():
+            if df is None or getattr(df, "empty", False):
+                continue
+            f = df
+            if start is not None:
+                f = f[f["date"] >= start]
+            if end is not None:
+                f = f[f["date"] <= end]
+            if not f.empty:
+                # Positional signal/price reads downstream require a
+                # RangeIndex; a slice keeps the original labels otherwise.
+                out[pair] = f.reset_index(drop=True)
+        return out
 
     def _load_informative_data(
         self,
@@ -1069,6 +1162,45 @@ class BacktestEngine:
         logger.info(f"Backtest: {len(sorted_dates)} candles, {len(pairlist)} pairs")
 
         for date_idx, current_date in enumerate(sorted_dates):
+            # Cash dividends on ex-dates, paid out BEFORE exits/entries:
+            # a position opened strictly before the ex-date is the holder
+            # of record and keeps the payout even if sold today, while a
+            # position opened on the ex-date itself (entries run below)
+            # was not entitled and receives nothing.
+            if div_by_date:
+                try:
+                    today = current_date.date() \
+                        if hasattr(current_date, "date") else current_date
+                except Exception:
+                    today = None
+                if today is not None:
+                    for trade in open_trades.values():
+                        if trade.is_short:
+                            continue
+                        if (trade.pair, today) in credited_divs:
+                            continue
+                        day_map = div_by_date.get(trade.pair)
+                        if not day_map or today not in day_map:
+                            continue
+                        # Entitlement: held since before the ex-date.
+                        try:
+                            open_day = trade.open_date.date()
+                        except AttributeError:
+                            open_day = None
+                        if open_day is not None and open_day >= today:
+                            continue
+                        payout = day_map[today] * (1 - dividend_tax) * trade.amount
+                        if payout > 0:
+                            wallets.add_amount(
+                                self._config.stake_currency, payout
+                            )
+                            dividends_paid += payout
+                            credited_divs.add((trade.pair, today))
+                            logger.debug(
+                                f"Dividend for {trade.pair} on {today}: "
+                                f"+{payout:.2f}"
+                            )
+
             # Process each pair at this timestamp
             for pair in pairlist:
                 if pair not in data:
@@ -1133,36 +1265,6 @@ class BacktestEngine:
                         stake_amount=stake_amount,
                         max_open_trades=max_open_trades,
                     )
-
-            # Cash dividends on ex-dates: holders of record (open long
-            # stock positions) are credited before exits are evaluated, so
-            # the cash is included in the equity sample below.
-            if div_by_date:
-                try:
-                    today = current_date.date() \
-                        if hasattr(current_date, "date") else current_date
-                except Exception:
-                    today = None
-                if today is not None:
-                    for trade in open_trades.values():
-                        if trade.is_short:
-                            continue
-                        day_map = div_by_date.get(trade.pair)
-                        if not day_map or today not in day_map:
-                            continue
-                        if (trade.pair, today) in credited_divs:
-                            continue
-                        payout = day_map[today] * (1 - dividend_tax) * trade.amount
-                        if payout > 0:
-                            wallets.add_amount(
-                                self._config.stake_currency, payout
-                            )
-                            dividends_paid += payout
-                            credited_divs.add((trade.pair, today))
-                            logger.debug(
-                                f"Dividend for {trade.pair} on {today}: "
-                                f"+{payout:.2f}"
-                            )
 
             # Sample mark-to-market equity once per timestamp (net of fees,
             # leverage-aware — previously gross-only and unleveraged, so the
@@ -1733,6 +1835,16 @@ class BacktestEngine:
         trade.stake_amount += add
         trade.fee_open += fee
         trade.nr_of_successful_entries += 1
+        # Each add lot carries its own T+1 clock: the newest shares must
+        # settle before the position (including them) can be sold.
+        try:
+            new_settle = get_settlement_date(
+                current_date, trade.pair, trade.exchange
+            )
+            if trade.settlement_date is None or new_settle > trade.settlement_date:
+                trade.settlement_date = new_settle
+        except Exception:
+            pass
         trade.update_rate(fill)
         wallets.deduct_amount(self._config.stake_currency, add)
         logger.debug(
@@ -1780,8 +1892,7 @@ class BacktestEngine:
         if (
             rule is not None
             and rule.settlement_type != SettlementType.T0
-            and settlement_date is not None
-            and self._tz_safe_le(current_date, settlement_date)
+            and settlement_pending(current_date, settlement_date)
         ):
             logger.debug(
                 f"Exit blocked for {trade.pair}: T+1 settlement until {settlement_date}"
@@ -1803,6 +1914,14 @@ class BacktestEngine:
             )
             # Recompute net ratio after a possible add (average cost moved).
             net_ratio = self._net_profit_ratio(trade, current_rate)
+            # An add booked above pushed settlement out (the new lot has
+            # its own T+1 clock); no exit may fire for it today.
+            if (
+                rule is not None
+                and rule.settlement_type != SettlementType.T0
+                and settlement_pending(current_date, trade.settlement_date)
+            ):
+                return
             profit_ratio = trade.calc_profit_ratio(current_rate)
 
         # 0a. A-share limit-down: no buyers at the close fill — hold the
@@ -1855,7 +1974,10 @@ class BacktestEngine:
         # Previously ignored (no margin model), letting insolvent positions
         # ride to profit. Uses gross ratio vs -1/leverage.
         leverage = trade.leverage or 1.0
-        if leverage > 1.0 and profit_ratio <= -1.0 / leverage:
+        # calc_profit_ratio already scales by leverage, so margin is wiped
+        # at -100% of that leveraged ratio (a 2x position liquidates on a
+        # ~-50% price move, not at -25%: the /leverage double-counted).
+        if leverage > 1.0 and profit_ratio <= -1.0:
             self._close_trade(
                 trade=trade,
                 rate=current_rate,

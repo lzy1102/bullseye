@@ -531,6 +531,23 @@ def merge_informative_pair(
             how='left'
         )
 
+    # Resolve merge_asof suffix collisions: a second @informative method
+    # on the same timeframe re-introduces column names that were already
+    # merged, so pandas renames BOTH sides to _x/_y — breaking strategy
+    # lookups like `rsi_1h`. Coalesce back to the bare name, preferring
+    # the existing values and filling gaps from the new merge.
+    for col in list(dataframe.columns):
+        if not col.endswith('_x'):
+            continue
+        right = col[:-2] + '_y'
+        if right not in dataframe.columns:
+            continue
+        base = col[:-2]
+        dataframe[base] = dataframe[col].where(
+            dataframe[col].notna(), dataframe[right]
+        )
+        dataframe = dataframe.drop(columns=[col, right])
+
     if drop_informative:
         cols_to_drop = [col for col in dataframe.columns if f'_{inf_tf}' in col]
         dataframe = dataframe.drop(columns=cols_to_drop)

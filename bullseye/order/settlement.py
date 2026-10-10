@@ -539,3 +539,24 @@ def get_settlement_date(
 ) -> datetime:
     """Convenience function to calculate settlement date."""
     return _detector.get_settlement_date(open_date, pair, exchange)
+
+
+def settlement_pending(
+    current_time: datetime,
+    settlement_date: Optional[datetime],
+) -> bool:
+    """T+N sell gate: True while `current_time` still predates the
+    settlement DAY (i.e. the position is locked).
+
+    Compared by calendar date, not by full datetime: A-share daily bars
+    are stamped at 00:00 while the settlement timestamp is the next
+    session's 09:30, so a datetime comparison kept daily backtests
+    locked until the following day (effective T+2), while intraday
+    frames settled at T+1 — inconsistent across timeframes.
+    """
+    if settlement_date is None:
+        return False
+    try:
+        return current_time.date() < settlement_date.date()
+    except AttributeError:
+        return current_time < settlement_date
