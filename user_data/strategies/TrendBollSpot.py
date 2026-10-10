@@ -1,10 +1,12 @@
 """
-TrendBollSpot - daily trend + Bollinger entry timing.
+TrendBollSpot - daily trend + Bollinger breakout timing.
 
 - Direction (gate): SMA20 > SMA60, same as BaseSpot.
-- Timing: enter only on a cross back above the Bollinger middle band
-  while the gate is up (buy the pullback recovery, not the chase).
-- Exit: SMA20 < SMA60 (death cross), any profit or loss.
+- Timing: enter on a cross above the Bollinger UPPER band while the
+  gate is up (buy strength, not pullbacks).
+- Exit: SMA20 < SMA60 (death cross), or an early exit when the close
+  falls below the Bollinger LOWER band (momentum dead, don't wait
+  for the slow death cross).
 - No DCA, no ROI, no stoploss. Bollinger period/std are plain
   attributes so hyperopt can pick them up later.
 """
@@ -42,22 +44,29 @@ class TrendBollSpot(IStrategy):
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         gate = dataframe["ma20"] > dataframe["ma60"]
-        above_mid = dataframe["close"] > dataframe["bb_mid"]
-        was_below = (
-            dataframe["close"].shift(1) <= dataframe["bb_mid"].shift(1)
+        above_upper = dataframe["close"] > dataframe["bb_upper"]
+        was_inside = (
+            dataframe["close"].shift(1) <= dataframe["bb_upper"].shift(1)
         ).fillna(False)
         dataframe.loc[
             (
                 gate
-                & above_mid
-                & was_below
+                & above_upper
+                & was_inside
                 & (dataframe["volume"] > 0)
             ),
             ["enter_long", "enter_tag"],
-        ] = (1, "boll_trend")
+        ] = (1, "boll_break")
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        dataframe.loc[
+            (
+                (dataframe["close"] < dataframe["bb_lower"])
+                & (dataframe["volume"] > 0)
+            ),
+            ["exit_long", "exit_tag"],
+        ] = (1, "boll_dead")
         dataframe.loc[
             (
                 (dataframe["ma20"] < dataframe["ma60"])
