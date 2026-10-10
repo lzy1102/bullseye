@@ -215,6 +215,12 @@ backtest:
   # buys fill higher, sells fill lower) - 0 disables the model
   slippage: 0.0
 
+  # Freqtrade-style fill semantics: entry/exit SIGNALS from the previous
+  # closed candle execute at the current candle's OPEN instead of the
+  # signal candle's close. Stoploss/ROI/trailing stay level-based;
+  # custom_exit and DCA adds keep same-bar semantics in this mode.
+  fill_next_open: false
+
   # Structured fee model - takes precedence over the flat `fee` above
   # when configured. A-share example (券商普遍万2.5,最低5元):
   # fees:

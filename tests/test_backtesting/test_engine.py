@@ -1702,6 +1702,77 @@ class TestInMemoryTimerange:
         assert all(t.entry_date.date() == day for t in result.trades)
 
 
+class TestFillNextOpen:
+    """backtest.fill_next_open defers signal fills to the next candle open."""
+
+    def _data(self):
+        # Flat closes at 100; bar 3 opens with a +5% gap, bar 5 with -10%.
+        n = 8
+        dates = pd.date_range("2024-01-01", periods=n, freq="1d")
+        opens = [100.0, 100.0, 100.0, 105.0, 105.0, 90.0, 90.0, 90.0]
+        return dates, {"BTC/USDT": pd.DataFrame({
+            "date": dates,
+            "open": opens,
+            "high": [max(o, 100.0) + 1 for o in opens],
+            "low": [min(o, 100.0) - 1 for o in opens],
+            "close": [100.0] * n,
+            "volume": [1000.0] * n,
+        })}
+
+    def _run(self, fill_next_open):
+        class SignalStrategy(IStrategy):
+            timeframe = "1d"
+            startup_candle_count = 1
+            minimal_roi = {}
+            stoploss = -1.0
+
+            def populate_indicators(self, dataframe, metadata):
+                return dataframe
+
+            def populate_entry_trend(self, dataframe, metadata):
+                dataframe["enter_long"] = 0
+                dataframe.loc[dataframe.index == 2,
+                              ["enter_long", "enter_tag"]] = (1, "sig_in")
+                return dataframe
+
+            def populate_exit_trend(self, dataframe, metadata):
+                dataframe["exit_long"] = 0
+                dataframe.loc[dataframe.index == 4,
+                              ["exit_long", "exit_tag"]] = (1, "sig_out")
+                return dataframe
+
+        dates, data = self._data()
+        config = Config()
+        config.set("dry_run_wallet", 1000)
+        config.set("stake_amount", 100)
+        config.set("max_open_trades", 1)
+        config.set("backtest.fill_next_open", fill_next_open)
+        engine = BacktestEngine(config)
+        result = engine.run(
+            strategy_class=SignalStrategy, pairlist=["BTC/USDT"],
+            timeframe="1d", data=data, initial_balance=1000,
+            stake_amount=100,
+        )
+        assert len(result.trades) == 1
+        return dates, result.trades[0]
+
+    def test_default_keeps_same_bar_close_fill(self):
+        dates, trade = self._run(fill_next_open=False)
+        assert trade.entry_date == dates[2]
+        assert trade.open_rate == pytest.approx(100.0)
+        assert trade.exit_date == dates[4]
+        assert trade.close_rate == pytest.approx(100.0)
+
+    def test_entry_and_exit_fill_at_next_open(self):
+        dates, trade = self._run(fill_next_open=True)
+        # Signal on 01-03 -> filled at 01-04 open (gap to 105).
+        assert trade.entry_date == dates[3]
+        assert trade.open_rate == pytest.approx(105.0)
+        # Exit signal on 01-05 -> filled at 01-06 open (gap to 90).
+        assert trade.exit_date == dates[5]
+        assert trade.close_rate == pytest.approx(90.0)
+
+
 class TestTuShareDividends:
     """TuShare dividend calendar parsing (stubbed pro API, no network)."""
 

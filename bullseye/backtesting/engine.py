@@ -1159,6 +1159,15 @@ class BacktestEngine:
         startup_candle_count = getattr(strategy, 'startup_candle_count', 30)
         startup_bars = startup_candle_count
 
+        # Optional freqtrade-style fill semantics: entry/exit SIGNALS from
+        # the previous closed candle execute at the current candle's open
+        # (default false keeps same-bar close fills). Stop/ROI/trailing
+        # remain level-based; custom_exit and DCA adds keep same-bar
+        # semantics in this mode.
+        fill_next_open = bool(
+            self._config.get("backtest.fill_next_open", False)
+        )
+
         logger.info(f"Backtest: {len(sorted_dates)} candles, {len(pairlist)} pairs")
 
         for date_idx, current_date in enumerate(sorted_dates):
@@ -1231,6 +1240,13 @@ class BacktestEngine:
                 signal_row = _ArrayRow(signal_arrays[pair], idx)
                 pair_last_index[pair] = idx
 
+                # Deferred fill plumbing (see fill_next_open above).
+                prev_signal_row = (
+                    _ArrayRow(signal_arrays[pair], idx - 1)
+                    if fill_next_open and idx > 0 else None
+                )
+                open_rate = prices["open"][idx]
+
                 # === Check exits for open trades ===
                 if pair in open_trades:
                     trade = open_trades[pair]
@@ -1238,6 +1254,8 @@ class BacktestEngine:
                         trade=trade,
                         strategy=strategy,
                         signal_row=signal_row,
+                        exit_signal_row=prev_signal_row,
+                        exit_signal_rate=(open_rate if fill_next_open else None),
                         current_rate=current_rate,
                         current_high=current_high,
                         current_low=current_low,
@@ -1250,12 +1268,18 @@ class BacktestEngine:
                     )
 
                 # === Check entries ===
-                if pair not in open_trades and len(open_trades) < max_open_trades:
+                if (
+                    pair not in open_trades
+                    and len(open_trades) < max_open_trades
+                    and (not fill_next_open or idx > 0)
+                ):
                     self._check_entry(
                         pair=pair,
                         strategy=strategy,
-                        signal_row=signal_row,
-                        current_rate=current_rate,
+                        signal_row=(prev_signal_row if fill_next_open
+                                    else signal_row),
+                        current_rate=(open_rate if fill_next_open
+                                      else current_rate),
                         prev_close=prev_close,
                         current_date=current_date,
                         timeframe=timeframe,
@@ -1866,6 +1890,8 @@ class BacktestEngine:
         wallets: Wallets,
         open_trades: Dict[str, LocalTrade],
         closed_bt_trades: List[BacktestTrade],
+        exit_signal_row: Optional[Any] = None,
+        exit_signal_rate: Optional[float] = None,
     ) -> None:
         """Check exit conditions for an open trade.
 
@@ -2184,11 +2210,16 @@ class BacktestEngine:
 
         # 5. Check exit signal from strategy (precomputed columns).
         # Honors use_exit_signal=False and exit_profit_only=True.
+        # With backtest.fill_next_open, the signal comes from the previous
+        # closed candle and fills at this candle's open.
         if not getattr(strategy, 'use_exit_signal', True):
             return
-        exit_long = signal_row.get("exit_long", 0)
-        exit_short = signal_row.get("exit_short", 0)
-        exit_tag = signal_row.get("exit_tag", None)
+        sig_row = exit_signal_row if exit_signal_row is not None else signal_row
+        fill_rate = (exit_signal_rate if exit_signal_rate is not None
+                     else current_rate)
+        exit_long = sig_row.get("exit_long", 0)
+        exit_short = sig_row.get("exit_short", 0)
+        exit_tag = sig_row.get("exit_tag", None)
 
         should_exit = False
         if trade.is_short and exit_short == 1:
@@ -2208,7 +2239,7 @@ class BacktestEngine:
                     trade=trade,
                     order_type="market",
                     amount=trade.amount,
-                    rate=current_rate,
+                    rate=fill_rate,
                     time_in_force="GTC",
                     exit_reason="exit_signal",
                     current_time=current_date,
@@ -2220,7 +2251,7 @@ class BacktestEngine:
 
             self._close_trade(
                 trade=trade,
-                rate=current_rate,
+                rate=fill_rate,
                 exit_reason=exit_tag or "exit_signal",
                 current_date=current_date,
                 position_manager=position_manager,
