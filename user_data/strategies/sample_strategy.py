@@ -4,6 +4,8 @@ Sample Strategy - Freqtrade compatible example strategy
 This strategy demonstrates the 100% compatibility with Freqtrade.
 You can use it directly with Bullseye or Freqtrade without any modifications.
 """
+from typing import Optional
+
 from bullseye.strategy import (
     IStrategy, informative, merge_informative_pair,
     IntParameter, DecimalParameter, BooleanParameter

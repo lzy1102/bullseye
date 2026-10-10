@@ -686,6 +686,33 @@ class BacktestEngine:
         except (ImportError, AttributeError):
             pass
 
+        # Freqtrade-style resolution: scan the strategy directory for a
+        # module defining the class (file name need not match, e.g.
+        # sample_strategy.py defining SampleStrategy).
+        if strategy_path.exists():
+            for candidate in sorted(strategy_path.glob("*.py")):
+                if candidate.name.startswith("_"):
+                    continue
+                try:
+                    module = importlib.import_module(
+                        f"{strategy_path.name}.{candidate.stem}"
+                    )
+                except ImportError:
+                    continue
+                cls = getattr(module, strategy_name, None)
+                if cls is None:
+                    continue
+                try:
+                    instance = cls()
+                except TypeError:
+                    continue
+                if not isinstance(instance, IStrategy):
+                    raise StrategyValidationError(
+                        strategy_name,
+                        [f"'{strategy_name}' does not implement IStrategy"],
+                    )
+                return instance
+
         raise StrategyLoadError(strategy_name)
 
     def _get_pairlist(self) -> List[str]:
