@@ -4,6 +4,8 @@ GridBank10 - A-share grid averaging-down strategy.
 Rules (per pair):
 - Capital is split into 5 equal tranches; tranche 1 opens on the first
   signal candle, tranches 2-5 are added by adjust_trade_position().
+- Trend gate: no first entry while the daily trend is down
+  (SMA20 <= SMA60). Open grids keep their DCA/exit rules.
 - Add one tranche each time the price falls 5% below the last buy price.
 - Never close at a loss: exits only via custom_exit once net profit
   reaches the take-profit target (default +5%).
@@ -22,8 +24,11 @@ class GridBank10(IStrategy):
     INTERFACE_VERSION = 3
 
     timeframe = "1d"
-    startup_candle_count = 5
+    startup_candle_count = 60
     can_short = False
+
+    # Daily-trend gate for the first tranche (SMA20 > SMA60).
+    trend_gate: bool = True
 
     # All exit timing lives in custom_exit; built-ins stay off.
     minimal_roi: dict = {}
@@ -82,12 +87,18 @@ class GridBank10(IStrategy):
         return None  # fall back to engine/config stake
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        dataframe["ma20"] = dataframe["close"].rolling(20).mean()
+        dataframe["ma60"] = dataframe["close"].rolling(60).mean()
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        # Grid starts on the first available candle.
+        # Grid starts on the first available candle with the daily
+        # trend up (SMA20 > SMA60); downtrends are skipped entirely.
+        cond = dataframe["volume"] > 0
+        if self.trend_gate:
+            cond = cond & (dataframe["ma20"] > dataframe["ma60"])
         dataframe.loc[
-            (dataframe["volume"] > 0),
+            cond,
             ["enter_long", "enter_tag"],
         ] = (1, "grid_start")
         return dataframe
