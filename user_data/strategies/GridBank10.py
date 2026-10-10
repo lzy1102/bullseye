@@ -7,11 +7,12 @@ Rules (per pair):
 - Trend gate: no first entry while the daily trend is down
   (SMA20 <= SMA60). Open grids keep their DCA/exit rules.
 - Add one tranche each time the price falls 5% below the last buy price.
-- No fixed take-profit: exits via a trailing stop on net profit. Each
-  trade tracks its peak net profit; it closes once profit gives back
-  trail_distance (default 3%) from the peak. The trail arms only above
-  break-even, so a grid that never turns green is never sold red.
-- No stoploss / ROI (a stoploss would violate "never sell red").
+- No fixed take-profit: exits via the engine trailing stop
+  (Freqtrade semantics). Static stoploss is disabled (0), so a grid that
+  never reaches the offset is never sold red; once net profit passes
+  trailing_stop_positive_offset, the stop jumps to
+  peak * (1 - trailing_stop_positive) and ratchets up only.
+- No ROI.
 
 Position sizing note: set tranche_stake so one tranche buys >= 100 shares
 at the traded price (A-share lot rule), e.g. 12000 for a ~40 CNY stock.
@@ -32,20 +33,23 @@ class GridBank10(IStrategy):
     # Daily-trend gate for the first tranche (SMA20 > SMA60).
     trend_gate: bool = True
 
-    # All exit timing lives in custom_exit; built-ins stay off.
+    # No ROI. Static stoploss off (0): grids hold dips until the
+    # trailing offset is reached, so nothing is ever sold red.
     minimal_roi: dict = {}
     stoploss: float = 0
-    trailing_stop = False
+
+    # Freqtrade-style trailing stop (engine-driven, price-based, net of
+    # fees). Offset > positive guarantees the first trailed stop already
+    # locks in profit: 1.05 * (1 - 0.03) = 1.0185.
+    trailing_stop = True
+    trailing_stop_positive = 0.03
+    trailing_stop_positive_offset = 0.05
+    trailing_only_offset_is_reached = True
 
     position_adjustment_enable = True
 
     max_tranches: int = 5
     dip_step: float = 0.05
-    # Trailing-stop on net profit: close once profit falls this far
-    # below its peak for the trade. No fixed take-profit level.
-    trail_distance: float = 0.03
-    # Trail arms only above this net profit (0 = break-even).
-    trail_arm: float = 0.0
     # Per-tranche stake. <= 0 means AUTO: total equity / max_tranches,
     # so position sizing follows the account with no manual tuning.
     tranche_stake: float = 0.0
@@ -55,14 +59,12 @@ class GridBank10(IStrategy):
         self._adds: Dict[str, int] = {}
         self._last_buy: Dict[str, float] = {}
         self._open_trade_id: Dict[str, str] = {}
-        self._peak: Dict[str, float] = {}
 
     def _reset_if_new_trade(self, pair: str, trade_id: str) -> None:
         if self._open_trade_id.get(pair) != trade_id:
             self._open_trade_id[pair] = trade_id
             self._adds[pair] = 0
             self._last_buy.pop(pair, None)
-            self._peak.pop(pair, None)
 
     def _auto_tranche(self) -> float:
         """One tranche = total equity / max_tranches (auto sizing)."""
@@ -135,7 +137,7 @@ class GridBank10(IStrategy):
         pair = trade.pair
         self._reset_if_new_trade(pair, trade.id)
         if self._adds.get(pair, 0) >= self.max_tranches - 1:
-            return None  # all 10 tranches deployed
+            return None  # all tranches deployed
         ref = self._last_buy.get(pair, trade.open_rate)
         if ref and current_rate <= ref * (1 - self.dip_step):
             self._adds[pair] = self._adds.get(pair, 0) + 1
@@ -153,26 +155,4 @@ class GridBank10(IStrategy):
             self._last_buy[pair] = trade.open_rate
         return None
 
-    def custom_exit(
-        self,
-        pair: str,
-        trade,
-        current_time,
-        current_rate: float,
-        current_profit: float,
-        exit_reason: str,
-        **kwargs,
-    ) -> Optional[str]:
-        # Trailing stop on net profit: track the peak, exit on give-back.
-        # Never sell red: the trail arms only above break-even.
-        peak = self._peak.get(pair)
-        if peak is None or current_profit > peak:
-            peak = current_profit
-            self._peak[pair] = peak
-        if peak > self.trail_arm and current_profit <= peak - self.trail_distance:
-            self._adds.pop(pair, None)
-            self._last_buy.pop(pair, None)
-            self._open_trade_id.pop(pair, None)
-            self._peak.pop(pair, None)
-            return "grid_trailing_stop"
-        return None
+
