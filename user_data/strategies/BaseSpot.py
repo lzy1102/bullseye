@@ -85,13 +85,3 @@ class BaseSpot(IStrategy):
         if dataframe["trend_1d"].iloc[-1] == -1:
             return "trend_bear"
         return None
-
-
-class BaseSpotBanks(BaseSpot):
-    """Bank-universe variant of BaseSpot.
-
-    Identical logic; separate class so it carries its own params file
-    (BaseSpotBanks.json, gate 25/110 tuned on banks 2020-2023) while
-    BaseSpot.json keeps the leaders-tuned 8/58 gate. One file cannot
-    serve two universes with different gates.
-    """
