@@ -1,0 +1,17 @@
+{
+  "strategy_name": "BaseSpotBanks",
+  "params": {
+    "roi": {},
+    "stoploss": {},
+    "trailing": {},
+    "max_open_trades": {},
+    "buy": {
+      "gate_fast": 25,
+      "gate_slow": 110
+    },
+    "sell": {},
+    "protection": {}
+  },
+  "ft_stratparam_v": 1,
+  "export_time": "2026-10-11 09:29:09.606749+00:00"
+}
