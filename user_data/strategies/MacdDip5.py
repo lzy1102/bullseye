@@ -7,8 +7,10 @@ Rules (per pair, long only, 1d):
 - Adds (tranches 2-5): each red day (close below previous close) adds
   one equal tranche, only while the cross is still valid (DIF > DEA).
   If price keeps rising (no red days), fewer tranches ride.
-- Exit all: histogram declines 3 days in a row
-  (hist[t] < hist[t-1] < hist[t-2] < hist[t-3]), any profit or loss.
+- Exit all: histogram is BELOW zero and still declining 3 days in a
+  row (hist[t] < 0 with hist[t] < hist[t-1] < hist[t-2] < hist[t-3]).
+  Shrinking while above zero is normal breathing - hold. Any profit
+  or loss on exit.
 No ROI, no stoploss, no trailing: the fade exit is the only way out.
 """
 from typing import Dict, Optional
@@ -73,7 +75,8 @@ class MacdDip5(IStrategy):
         dataframe["hist"] = macd - sig
         h = dataframe["hist"]
         dataframe["fade3"] = (
-            (h < h.shift(1)) & (h.shift(1) < h.shift(2))
+            (h < 0)
+            & (h < h.shift(1)) & (h.shift(1) < h.shift(2))
             & (h.shift(2) < h.shift(3))
         ).fillna(False)
         return dataframe
