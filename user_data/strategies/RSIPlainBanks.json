@@ -1,0 +1,18 @@
+{
+  "strategy_name": "RSIPlainBanks",
+  "params": {
+    "roi": {},
+    "stoploss": {},
+    "trailing": {},
+    "max_open_trades": {},
+    "buy": {
+      "rsi_period": 10,
+      "oversold": 39,
+      "overbought": 82
+    },
+    "sell": {},
+    "protection": {}
+  },
+  "ft_stratparam_v": 1,
+  "export_time": "2026-10-12 09:46:59.675486+00:00"
+}
