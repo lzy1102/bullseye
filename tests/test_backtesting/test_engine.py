@@ -1266,6 +1266,35 @@ class TestOrderFilled:
         trades = run_flat_backtest(Boom, data)
         assert len(trades) == 1
 
+    def test_dca_add_fires_order_filled(self):
+        # DCA fills must notify order_filled too (freqtrade parity);
+        # previously only entries and exits notified.
+        n = 40
+        dates = pd.date_range("2024-01-01", periods=n, freq="1h")
+        data = {"BTC/USDT": pd.DataFrame({
+            "date": dates, "open": [100.0] * n, "high": [100.0] * n,
+            "low": [100.0] * n, "close": [100.0] * n,
+            "volume": [1000.0] * n,
+        })}
+        seen = []
+
+        class AddOnce(FlatTestStrategy):
+            position_adjustment_enable = True
+
+            def adjust_trade_position(self, **kwargs):
+                if kwargs["trade"].nr_of_successful_entries == 1:
+                    return 50.0
+                return None
+
+            def order_filled(self, pair, trade, order, current_time,
+                             **kwargs):
+                seen.append((order.ft_order_side, round(order.price, 2)))
+
+        trades = run_flat_backtest(AddOnce, data)
+        assert len(trades) == 1
+        assert trades[0].entries == 2
+        assert [s for s, _ in seen] == ["buy", "buy", "sell"]
+
 
 class TestStockDownloadHelpers:
     """KlineData -> OHLCV conversion and stock download wiring."""

@@ -1875,6 +1875,14 @@ class BacktestEngine:
             f"Adjust: {trade.pair} +{amount:.0f} @ {fill:.2f}, "
             f"avg={trade.open_rate:.2f}, stake={trade.stake_amount:.2f}"
         )
+        # Notify strategies of DCA fills (freqtrade parity: order_filled
+        # fires for every fill, not just entries/exits).
+        self._fire_order_filled(
+            strategy, trade.pair, trade,
+            self._make_fill_order(
+                trade.pair, "buy", fill, amount, current_date,
+            ),
+        )
 
     def _check_exit(
         self,
