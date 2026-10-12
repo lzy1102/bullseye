@@ -1,0 +1,56 @@
+{
+  "strategy_name": "VolatilityGridSpot",
+  "params": {
+    "roi": {
+      "0": 0.08,
+      "60": 0.04,
+      "150": 0.03,
+      "210": 0.02,
+      "300": 0.01
+    },
+    "stoploss": {
+      "stoploss": -0.08
+    },
+    "trailing": {
+      "trailing_stop": true,
+      "trailing_stop_positive": 0.03,
+      "trailing_stop_positive_offset": 0.05,
+      "trailing_only_offset_is_reached": true
+    },
+    "max_open_trades": {},
+    "buy": {
+      "grid_levels": 5,
+      "grid_atr_multiplier": 0.8,
+      "max_dca_count": 5,
+      "min_atr_ratio": 0.002,
+      "rsi_period": 14,
+      "rsi_oversold": 35,
+      "atr_period": 14,
+      "sma_timeperiod": 9,
+      "min_gap_ratio": 0.0,
+      "adjust_profit": 0.04,
+      "rebound_pct": 0.005,
+      "lock_adjust_time": 36,
+      "min_roi_param": 0.045,
+      "break_even_pct": 5,
+      "break_even_roi": 0.015,
+      "use_stale_exit": true,
+      "stale_hours": 240,
+      "stale_roi": 0.015,
+      "stale_min_entries": 2,
+      "use_gap_guard": true,
+      "gap_threshold_h": 240,
+      "gap_stake_factor": 0.4,
+      "use_risk_size": true,
+      "risk_stake_factor": 0.5,
+      "deep_grid_levels": 3,
+      "use_loss_throttle": false,
+      "loss_throttle_start": 18,
+      "throttle_factor": 0.5
+    },
+    "sell": {},
+    "protection": {}
+  },
+  "ft_stratparam_v": 1,
+  "export_time": "2026-10-12 07:05:45.460636+00:00"
+}
