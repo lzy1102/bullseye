@@ -5,8 +5,11 @@ Rules (per pair, long only, 1d):
 - Tranche 1: after N straight red days (close < prev close, N in a row).
 - Adds (tranches 2-5): each time ANOTHER full N-day red run completes
   after the last fill.
-- Exit all: net profit reaches R (fixed ROI target). Never sells red:
-  no stoploss, no gate, no trailing. If the target never comes, hold.
+- Exit all: net profit reaches R (fixed ROI target), OR the daily
+  gate turns bear (MA20 < MA60) -> exit at market even at a loss
+  ("gate_bear"). No stoploss, no trailing.
+- Gate also guards entries: no first tranche while the gate is down
+  (prevents reopening into an ongoing bear market right after a cut).
 """
 from typing import Dict, Optional
 
@@ -73,6 +76,8 @@ class DcaFixed(IStrategy):
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         dataframe["red_streak"] = self._streak(dataframe["close"])
+        dataframe["ma20"] = dataframe["close"].rolling(20).mean()
+        dataframe["ma60"] = dataframe["close"].rolling(60).mean()
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
@@ -80,14 +85,21 @@ class DcaFixed(IStrategy):
             (dataframe["red_streak"] == self.red_days)
             & (dataframe["red_streak"].shift(1) != self.red_days)
         ).fillna(False)
+        gate_up = (dataframe["ma20"] > dataframe["ma60"]).fillna(False)
         dataframe.loc[
-            (fresh & (dataframe["volume"] > 0)),
+            (fresh & gate_up & (dataframe["volume"] > 0)),
             ["enter_long", "enter_tag"],
         ] = (1, "dca_start")
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        dataframe["exit_long"] = 0
+        dataframe.loc[
+            (
+                (dataframe["ma20"] < dataframe["ma60"])
+                & (dataframe["volume"] > 0)
+            ),
+            ["exit_long", "exit_tag"],
+        ] = (1, "gate_bear")
         return dataframe
 
     def custom_exit(
