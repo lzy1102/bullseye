@@ -35,10 +35,10 @@ class DcaFixed(IStrategy):
     # Fixed take-profit on net profit. Below it: never sell.
     target_roi: float = 0.08
     max_tranches: int = 5
-    # Asymmetric gate: first entries need a FIRMLY-up trend
-    # (MA20 > MA60 x (1+gap)), while exits stay on the plain death
-    # cross. Chop-zone entries (lines tangled) are skipped entirely.
-    gate_gap: float = 0.015
+    # Asymmetric entry gate REMOVED (tested 2026-10-12, reverted):
+    # requiring MA20 > MA60 x 1.015 cut slow-grind entries that were
+    # profitable (banks +46.5% -> +36.2%). Plain cross gate retained.
+    gate_gap: float = 0.0
     # Swing-low breakdown exit REMOVED (tested 2026-10-12, reverted):
     # a 20-day-low break fires on every routine pullback (328/803 trades
     # vs 259/589, win rate collapsed, banks +46.5% -> +27.3%, leaders
