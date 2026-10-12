@@ -50,12 +50,16 @@ logger = logging.getLogger(__name__)
 # 波动率网格现货版 — 只做多(can_short=False)
 # 入场：1d趋势(>=0, 含震荡) + ATR动态网格 + RSI超卖；出场：趋势反转/stale/保本/trailing
 class VolatilityGridSpot(IStrategy):
+    # ROI ladder / stoploss / trailing are tuned via same-named
+    # descriptors below (spaces roi/stoploss/trailing) and synced into
+    # these plain engine-facing attributes every run. The json mirrors
+    # the values in its roi/stoploss/trailing sections for readability;
+    # the buy section carries the descriptor values (the only section
+    # apply_params_file reads for descriptors).
     minimal_roi = {
         "0": 0.08,
         "60": 0.04,
-        "150": 0.03,
-        "210": 0.02,
-        "300": 0.01,
+        "180": 0.02,
     }
 
     stoploss: float = -0.08
@@ -63,6 +67,19 @@ class VolatilityGridSpot(IStrategy):
     trailing_stop_positive = 0.03
     trailing_stop_positive_offset = 0.05
     trailing_only_offset_is_reached = True
+
+    roi_0 = DecimalParameter(0.03, 0.15, default=0.08, space="roi",
+                             optimize=True)
+    roi_60 = DecimalParameter(0.01, 0.08, default=0.04, space="roi",
+                              optimize=True)
+    roi_180 = DecimalParameter(0.005, 0.05, default=0.02, space="roi",
+                               optimize=True)
+    sl_level = DecimalParameter(-0.15, -0.03, default=-0.08,
+                                space="stoploss", optimize=True)
+    trail_pos = DecimalParameter(0.01, 0.06, default=0.03,
+                                 space="trailing", optimize=True)
+    trail_offset = DecimalParameter(0.03, 0.10, default=0.05,
+                                    space="trailing", optimize=True)
     use_custom_stoploss = False
     timeframe = '30m'
     can_short = False
@@ -136,6 +153,16 @@ class VolatilityGridSpot(IStrategy):
         return dataframe
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        # Sync hyperopt-tuned knobs into the plain attributes the engine
+        # reads directly (a Parameter object would break its arithmetic).
+        self.minimal_roi = {
+            "0": float(self.roi_0.value),
+            "60": float(self.roi_60.value),
+            "180": float(self.roi_180.value),
+        }
+        self.stoploss = float(self.sl_level.value)
+        self.trailing_stop_positive = float(self.trail_pos.value)
+        self.trailing_stop_positive_offset = float(self.trail_offset.value)
         dataframe['sma'] = ta.SMA(dataframe['close'], timeperiod=self.sma_timeperiod.value)
         dataframe['atr'] = ta.ATR(dataframe['high'], dataframe['low'], dataframe['close'], timeperiod=self.atr_period.value)
         dataframe['atr_ratio'] = dataframe['atr'] / dataframe['close']
