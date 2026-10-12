@@ -35,6 +35,10 @@ class DcaFixed(IStrategy):
     # Fixed take-profit on net profit. Below it: never sell.
     target_roi: float = 0.08
     max_tranches: int = 5
+    # Swing-low breakdown exit: close below the lowest low of the prior
+    # N bars (excl. current) exits immediately, without waiting for the
+    # slow death cross. Catches fast breakdowns the MA gate misses.
+    swing_window: int = 20
 
     def __init__(self):
         # Last fill date per pair (first fill = trade open date).
@@ -78,6 +82,9 @@ class DcaFixed(IStrategy):
         dataframe["red_streak"] = self._streak(dataframe["close"])
         dataframe["ma20"] = dataframe["close"].rolling(20).mean()
         dataframe["ma60"] = dataframe["close"].rolling(60).mean()
+        dataframe["swing_low"] = (
+            dataframe["low"].shift(1).rolling(self.swing_window).min()
+        )
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
@@ -93,6 +100,13 @@ class DcaFixed(IStrategy):
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        dataframe.loc[
+            (
+                (dataframe["close"] < dataframe["swing_low"])
+                & (dataframe["volume"] > 0)
+            ),
+            ["exit_long", "exit_tag"],
+        ] = (1, "swing_break")
         dataframe.loc[
             (
                 (dataframe["ma20"] < dataframe["ma60"])
