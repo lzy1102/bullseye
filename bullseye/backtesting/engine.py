@@ -533,8 +533,31 @@ class BacktestEngine:
 
         # Load data (in-memory injection takes precedence over disk)
         from_disk = data is None
+        trade_start_ts: Optional[pd.Timestamp] = None
         if data is None:
-            data = self._load_data(pairlist, timeframe, timerange)
+            # Prepend indicator warmup bars before the requested range:
+            # a timerange starting at X would otherwise leave long-lookback
+            # indicators (e.g. SMA250) NaN for months inside the range.
+            # Warmup rows are loaded but never traded (see skip below).
+            startup_count = int(getattr(strategy, 'startup_candle_count', 30) or 30)
+            load_timerange = timerange
+            if timerange:
+                parts = timerange.split("-")
+                if len(parts) == 2 and parts[0]:
+                    try:
+                        from bullseye.strategy.interface import timeframe_to_minutes
+                        base_start = pd.Timestamp(parts[0])
+                        tf_min = timeframe_to_minutes(timeframe)
+                        margin = int(startup_count * tf_min * 1.7) + 7 * 24 * 60
+                        ext_start = base_start - pd.Timedelta(minutes=margin)
+                        load_timerange = (
+                            f"{ext_start.strftime('%Y%m%d')}-{parts[1]}"
+                        )
+                        trade_start_ts = base_start
+                    except Exception:
+                        load_timerange = timerange
+                        trade_start_ts = None
+            data = self._load_data(pairlist, timeframe, load_timerange)
         if not data:
             logger.error("No data available for backtesting")
             return BacktestResult(strategy_name=strategy.__class__.__name__)
@@ -618,6 +641,7 @@ class BacktestEngine:
             dividends=dividend_map,
             dividend_tax=dividend_tax,
             timerange=timerange,
+            trade_start_ts=trade_start_ts,
         )
 
         # Build result
@@ -1034,6 +1058,7 @@ class BacktestEngine:
         dividends: Optional[Dict[str, List[tuple]]] = None,
         dividend_tax: float = 0.1,
         timerange: Optional[str] = None,
+        trade_start_ts: Optional[pd.Timestamp] = None,
     ) -> List[BacktestTrade]:
         """
         Main backtesting loop.
@@ -1171,6 +1196,11 @@ class BacktestEngine:
         logger.info(f"Backtest: {len(sorted_dates)} candles, {len(pairlist)} pairs")
 
         for date_idx, current_date in enumerate(sorted_dates):
+            # Date-level warmup skip: warmup bars (loaded so long-lookback
+            # indicators are valid at range start) never trade, pay
+            # dividends, or sample equity/model timers.
+            if trade_start_ts is not None and current_date < trade_start_ts:
+                continue
             # Cash dividends on ex-dates, paid out BEFORE exits/entries:
             # a position opened strictly before the ex-date is the holder
             # of record and keeps the payout even if sold today, while a
@@ -1220,8 +1250,14 @@ class BacktestEngine:
                 if idx is None:
                     continue
 
-                # Skip startup period
-                if idx < startup_bars:
+                # Skip warmup bars: data may be loaded earlier than the
+                # requested trade window so long-lookback indicators are
+                # valid from the first traded candle. Warmup rows feed the
+                # indicators but never trade or sample equity.
+                if trade_start_ts is not None:
+                    if current_date < trade_start_ts:
+                        continue
+                elif idx < startup_bars:
                     continue
 
                 # Update data provider index. Expose only CLOSED candles

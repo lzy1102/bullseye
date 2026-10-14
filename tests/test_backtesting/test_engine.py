@@ -98,6 +98,30 @@ class SingleTradeExitSignalStrategy(ImmediateExitStrategy):
         return True
 
 
+class SMAWarmupStrategy(IStrategy):
+    """Enters while close > SMA50 - needs 50 bars of history to be valid."""
+
+    timeframe = "1d"
+    startup_candle_count = 60
+    minimal_roi = {}
+    stoploss = -1.0
+    trailing_stop = False
+
+    def populate_indicators(self, dataframe, metadata):
+        dataframe["sma50"] = dataframe["close"].rolling(50).mean()
+        return dataframe
+
+    def populate_entry_trend(self, dataframe, metadata):
+        dataframe["enter_long"] = (
+            dataframe["close"] > dataframe["sma50"]
+        ).fillna(False).astype(int)
+        return dataframe
+
+    def populate_exit_trend(self, dataframe, metadata):
+        dataframe["exit_long"] = 0
+        return dataframe
+
+
 def make_flat_data(pair_periods: Dict[str, int], start: str = "2024-01-01") -> Dict[str, pd.DataFrame]:
     """Create flat OHLCV data (all prices = 100) for each pair."""
     data = {}
@@ -1512,6 +1536,54 @@ class TestAdjustValidation:
             timeframe="1h", initial_balance=1000,
         )
         assert result.metrics.total_trades == 1
+
+
+class TestStartupWarmup:
+    """Disk loads prepend indicator warmup bars before the timerange start.
+
+    Without this, a timerange starting at X leaves long-lookback indicators
+    (SMA50/SMA250) NaN for the first N bars inside the window, silently
+    shifting entries. Warmup rows feed indicators but never trade, pay
+    dividends, or sample equity."""
+
+    def _write(self, tmp_path):
+        from bullseye.commands.data_commands import _save_ohlcv_df
+
+        periods = 160
+        dates = pd.date_range("2023-01-02", periods=periods, freq="B")
+        close = pd.Series(range(periods), dtype=float) * 0.1 + 10.0
+        df = pd.DataFrame({
+            "date": dates, "open": close, "high": close, "low": close,
+            "close": close, "volume": [1000.0] * periods,
+        })
+        datadir = tmp_path / "user_data" / "data"
+        _save_ohlcv_df(df, str(datadir), "000001.SZ", "1d", "json",
+                       prepend=False, erase=True,
+                       meta={"adjust": "qfq", "datafeed": "test"})
+        return datadir
+
+    def test_ma_valid_on_first_window_bar(self, tmp_path):
+        self._write(tmp_path)
+        config = Config()
+        config.set("datadir", str(tmp_path / "user_data" / "data"))
+        config.set("stock.adjust", "qfq")
+        config.set("dry_run_wallet", 100000)
+        config.set("stake_amount", 20000)
+        config.set("max_open_trades", 1)
+        engine = BacktestEngine(config)
+        result = engine.run(
+            strategy_class=SMAWarmupStrategy, pairlist=["000001.SZ"],
+            timeframe="1d", initial_balance=100000,
+            timerange="20230601-20231231",
+        )
+        assert result.metrics.total_trades == 1
+        entry = pd.Timestamp(result.trades[0].entry_date)
+        # SMA50 must be valid immediately: entry on the first traded bar.
+        # Without warmup prepending this fires ~50 bars later.
+        assert entry == pd.Timestamp("2023-06-01")
+        # Warmup bars never sample equity: curve starts at window start.
+        equity = result.get_equity_dataframe()
+        assert pd.Timestamp(equity["date"].iloc[0]) >= pd.Timestamp("2023-06-01")
 
 
 class TestDividends:
