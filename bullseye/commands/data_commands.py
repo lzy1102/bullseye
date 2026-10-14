@@ -52,17 +52,34 @@ def _split_pairs(pairs: Optional[str]) -> list:
 
 
 def _klines_to_ohlcv_df(klines) -> "object":
-    """Convert a list of KlineData to a backtest-ready OHLCV DataFrame."""
+    """Convert a list of KlineData to a backtest-ready OHLCV DataFrame.
+
+    Extra per-candle columns carried on KlineData.extra (e.g. BaoStock
+    turn/peTTM/pbMRQ factors) are appended as dataframe columns when
+    present, so factor strategies read them like any other indicator.
+    """
     import pandas as pd
 
-    df = pd.DataFrame([{
-        "date": k.datetime,
-        "open": float(k.open_price),
-        "high": float(k.high_price),
-        "low": float(k.low_price),
-        "close": float(k.close_price),
-        "volume": float(k.volume),
-    } for k in klines if k.datetime is not None])
+    rows = []
+    for k in klines:
+        if k.datetime is None:
+            continue
+        row = {
+            "date": k.datetime,
+            "open": float(k.open_price),
+            "high": float(k.high_price),
+            "low": float(k.low_price),
+            "close": float(k.close_price),
+            "volume": float(k.volume),
+        }
+        extra = getattr(k, "extra", None)
+        if extra:
+            for key, value in extra.items():
+                if key not in row:
+                    row[key] = value
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
     if df.empty:
         return df
     df["date"] = pd.to_datetime(df["date"])

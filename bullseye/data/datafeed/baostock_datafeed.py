@@ -62,8 +62,18 @@ class BaoStockDatafeed(BaseDatafeed):
         None: "3",    # 不复权
     }
 
-    # Fields requested from query_history_k_data_plus
-    DAILY_FIELDS = "date,code,open,high,low,close,volume,amount"
+    # Fields requested from query_history_k_data_plus.
+    # Daily also carries liquidity/valuation factors (turnover, PE/PB/PS/PCF,
+    # preclose, pctChg, ST flag) which are persisted as extra dataframe
+    # columns by the downloader for factor research.
+    DAILY_FIELDS = (
+        "date,code,open,high,low,close,preclose,volume,amount,adjustflag,"
+        "turn,tradestatus,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM,isST"
+    )
+    LEGACY_DAILY_FIELDS = "date,code,open,high,low,close,volume,amount"
+    DAILY_EXTRA_NUMERIC = (
+        "preclose", "turn", "pctChg", "peTTM", "pbMRQ", "psTTM", "pcfNcfTTM",
+    )
     MINUTE_FIELDS = "time,code,open,high,low,close,volume,amount"
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -224,8 +234,55 @@ class BaoStockDatafeed(BaseDatafeed):
             def num(value: str) -> float:
                 return float(value) if value not in ("", None) else 0.0
 
-            # Daily row layout: date,code,open,high,low,close,volume,amount
-            # Minute row layout: time,code,open,high,low,close,volume,amount
+            if freq in ("5", "15", "30", "60"):
+                # Minute row layout: time,code,open,high,low,close,volume,amount
+                return KlineData(
+                    symbol=symbol,
+                    exchange=symbol.split(".")[-1] if "." in symbol else "",
+                    datetime=dt,
+                    interval=interval,
+                    open_price=num(row[2]),
+                    high_price=num(row[3]),
+                    low_price=num(row[4]),
+                    close_price=num(row[5]),
+                    volume=num(row[6]),
+                    turnover=num(row[7]),
+                )
+
+            # Daily: legacy 8-field rows keep old indices; extended 18-field
+            # rows are parsed by field name so column reordering upstream
+            # cannot silently shift prices into volume.
+            daily_fields = self.DAILY_FIELDS.split(",")
+            if len(row) >= len(daily_fields):
+                vals = dict(zip(daily_fields, row))
+
+                def numx(value: str) -> float:
+                    # BaoStock leaves factor cells empty (negative PE,
+                    # suspended days) - keep them NaN, not 0.0, so factor
+                    # math (1/PE) and ranking stay meaningful.
+                    return float(value) if value not in ("", None) else float("nan")
+
+                extra = {
+                    name: numx(vals.get(name, ""))
+                    for name in self.DAILY_EXTRA_NUMERIC
+                }
+                st = vals.get("isST", "")
+                extra["isST"] = int(st) if st not in ("", None) else 0
+                return KlineData(
+                    symbol=symbol,
+                    exchange=symbol.split(".")[-1] if "." in symbol else "",
+                    datetime=dt,
+                    interval=interval,
+                    open_price=num(vals["open"]),
+                    high_price=num(vals["high"]),
+                    low_price=num(vals["low"]),
+                    close_price=num(vals["close"]),
+                    volume=num(vals["volume"]),
+                    turnover=num(vals["amount"]),
+                    extra=extra,
+                )
+
+            # Legacy daily layout: date,code,open,high,low,close,volume,amount
             return KlineData(
                 symbol=symbol,
                 exchange=symbol.split(".")[-1] if "." in symbol else "",
@@ -238,7 +295,7 @@ class BaoStockDatafeed(BaseDatafeed):
                 volume=num(row[6]),
                 turnover=num(row[7]),
             )
-        except (ValueError, IndexError) as e:
+        except (ValueError, IndexError, KeyError) as e:
             logger.debug(f"Skipping unparsable BaoStock row ({e}): {row}")
             return None
 

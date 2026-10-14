@@ -31,6 +31,11 @@ class KlineData:
     turnover: float = 0.0        # Not always available
     open_interest: float = 0.0    # For futures
 
+    # Optional extra columns (e.g. BaoStock turn/peTTM/pbMRQ...).
+    # Persisted into the OHLCV dataframe as additional columns so strategies
+    # can use liquidity/valuation factors without a separate data source.
+    extra: Optional[dict] = None
+
     def __repr__(self):
         return f"KlineData({self.symbol}, {self.interval}, {self.close_price}, {self.datetime})"
 
