@@ -1,5 +1,8 @@
 # Bullseye
 
+> 当前状态（2026-10-14）：`pytest tests/` → **409 passed, 9 skipped**
+> （跳过项需要 akshare/tushare/baostock 网络或 token）。
+
 ## Running Tests
 
 ### Unit Tests

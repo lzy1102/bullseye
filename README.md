@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/lzy1102/bullseye/actions/workflows/ci.yml/badge.svg)](https://github.com/lzy1102/bullseye/actions/workflows/ci.yml)
 
+**English** | [中文](README.zh-CN.md)
+
 A quantitative trading framework compatible with [Freqtrade](https://github.com/freqtrade/freqtrade), supporting crypto, stock, and futures trading.
 
 ## Features
@@ -22,6 +24,12 @@ A quantitative trading framework compatible with [Freqtrade](https://github.com/
     sell-side stamp duty and transfer fee (backtest.fees)
   - Vectorized signal computation (indicators run once per pair, ~1000x faster on long histories)
   - Accepts in-memory OHLCV data (`run(data={...})`) for programmatic use
+  - Startup-candle warmup: bars before the timerange are loaded so long-lookback
+    indicators (SMA250, weekly gates) are valid on the first traded bar
+  - Optional next-open fills (`backtest.fill_next_open`) for deployable execution
+    semantics; same-bar close fills remain the default
+  - BaoStock daily files additionally persist liquidity/valuation factor columns
+    (`turn`, `peTTM`, `pbMRQ`, `psTTM`, `pcfNcfTTM`, `isST`) for factor research
 - **Hyperparameter Optimization** - Random search optimization with multiple loss functions
 - **Flexible Database** - SQLite (default), PostgreSQL, MySQL support
 - **Structured Exception Hierarchy** - Clear error handling with specific exception types
@@ -539,7 +547,7 @@ Current test status: **409 passed, 9 skipped** (skipped tests require external d
 | Feature | Bullseye | Freqtrade |
 |---------|----------|-----------|
 | IStrategy Interface | ✅ v3 | v3 |
-| @informative Decorator | ⚠️ syntax only | ✅ |
+| @informative Decorator | ✅ (lookahead-safe merge, backtest + live) | ✅ |
 | Hyperoptable Parameters | ✅ | ✅ |
 | DataProvider | ✅ | ✅ |
 | Callbacks | ✅ | ✅ |
