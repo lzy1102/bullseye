@@ -26,6 +26,64 @@ A quantitative trading framework compatible with [Freqtrade](https://github.com/
 - **Flexible Database** - SQLite (default), PostgreSQL, MySQL support
 - **Structured Exception Hierarchy** - Clear error handling with specific exception types
 
+## Strategy Portfolio & Backtest Results
+
+Reference strategies live in `user_data/strategies/` (sibling `{Strategy}.json`
+parameter files are applied automatically). Unless noted, all results below
+are A-share stocks, **initial capital 100,000 CNY, 2023-01-01 → 2026-10-10
+(~3.8 years)**, quoted fees, T+1 settlement, 100-share lots and ±10%/20%
+price-limit rules enforced. **CAGR = compound annual growth rate.**
+
+### Stable combo — single account, two engines
+
+| Strategy | Universe | Total | CAGR | Max DD | PF | Yearly |
+|---|---|---|---|---|---|---|
+| **ComboSteady** | Big-4 banks + 27 momentum names | +109.2% | +21.6% | 8.4% | 3.82 | +12.9 / +31.3 / +10.1 / +28.2 |
+| TopRot | 27-name cross-sectional momentum rotation | +172.0% | +30.4% | 15.5% | 3.83 | +2.1 / +28.4 / +30.3 / +59.3 |
+
+ComboSteady runs a slow bank trend leg and a monthly momentum-rotation leg in
+one account (shared cash): every year positive, 32/45 winning months, worst
+month −2.8%. TopRot swaps the pool's top-2 10-day momentum names every ≤30
+days with a −10% mistake cut and a long-term filter (only names above a
+rising 250-day average are eligible).
+
+### Big-4 banks (601398 / 601288 / 601988 / 601939)
+
+| Strategy | Total | CAGR | Max DD | PF | Trades |
+|---|---|---|---|---|---|
+| MacdPreGateW | +104.5% | +20.9% | 13.9% | 9.90 | 11 |
+| RSIPlainW | +84.7% | +17.7% | 7.4% | 48.0 | 18 |
+
+### Banks (7: big-4 + 600036 / 600016 / 000001)
+
+| Strategy | Total | CAGR | Max DD | PF | Trades | Win |
+|---|---|---|---|---|---|---|
+| TrendGridTradingStrategySpot | +89.5% | +18.5% | 15.9% | 8.25 | 21 | 67% |
+| GridBank10 | +84.7% | +17.7% | 11.3% | 8.34 | 57 | 93% |
+| RSIPlainBanks | +57.9% | +12.9% | 6.7% | 7.94 | 32 | 81% |
+| MacdDip5 | +54.0% | +12.1% | 12.5% | 1.98 | 212 | 44% |
+| VolPriceSpot | +46.1% | +10.6% | 9.7% | 4.96 | 64 | 58% |
+| TrendFollowSpot | +41.5% | +9.7% | 15.1% | 1.79 | 352 | 45% |
+| DcaFixed | +38.1% | +8.9% | 9.0% | 2.36 | 94 | 61% |
+| BaseSpotBanks | +28.1% | +6.8% | 12.4% | 5.46 | 24 | 54% |
+| BankMACross (baseline) | +13.0% | +3.3% | 3.6% | 1.84 | 113 | 64% |
+
+### Leaders (18 large caps: 300750 / 002594 / 688981 / 600276 / ...)
+
+| Strategy | Total | CAGR | Max DD | PF | Trades | Win |
+|---|---|---|---|---|---|---|
+| VolPriceSpot | +43.8% | +10.1% | 18.8% | 1.98 | 117 | 44% |
+| BaseSpot | +39.2% | +9.2% | 18.8% | 1.90 | 134 | 39% |
+| RSIPlain | +38.3% | +9.0% | 9.7% | 13.3 | 13 | 85% |
+| MacdDip5 | +35.2% | +8.3% | 18.4% | 1.28 | 306 | 37% |
+| DcaFixed | +25.0% | +6.1% | 13.3% | 1.29 | 203 | 49% |
+
+Benchmarks over the same window: buy & hold 7 banks ≈ +99%, 18 leaders
+≈ +58%. Backtest notes: momentum/rotation returns concentrate in the
+2024–2026 AI/theme bull; long-lookback strategies (SMA250 filters, weekly
+gates) rely on the engine's startup-candle warmup so indicators are valid on
+the first traded bar. Past performance does not guarantee future results.
+
 ## Installation
 
 ### Native Installation
@@ -433,7 +491,7 @@ pytest tests/test_optimize/ -v
 pytest tests/ --cov=bullseye --cov-report=html
 ```
 
-Current test status: **242 passed, 14 skipped** (skipped tests require external dependencies like akshare/tushare/baostock or network access; CI runs on Python 3.10/3.12)
+Current test status: **409 passed, 9 skipped** (skipped tests require external dependencies like akshare/tushare/baostock or network access; CI runs on Python 3.10/3.12)
 
 ## Compatibility with Freqtrade
 
