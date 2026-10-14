@@ -84,6 +84,47 @@ Benchmarks over the same window: buy & hold 7 banks ≈ +99%, 18 leaders
 gates) rely on the engine's startup-candle warmup so indicators are valid on
 the first traded bar. Past performance does not guarantee future results.
 
+### Wave-capture, defensive & archived experiments (same window, 100k CNY)
+
+| Strategy | Idea | Total | CAGR | Max DD | PF | Verdict |
+|---|---|---|---|---|---|---|
+| TopRotATR | MA20 exit → 3×ATR chandelier | +118.7% | +23.1% | 22.6% | 2.51 | worse than TopRot (bigger giveback) |
+| TopRotPyramid | add on 10-day highs | +14.2% | +3.6% | 14.6% | 1.54 | failed (chases tops, half base size) |
+| TurtleATR 20/4 | 20d breakout + 4×ATR chandelier | +65.3% | +14.3% | 12.8% | 3.67 | usable defensive leg, below baseline |
+| TurtleATR 55/3 | classic turtle | +39.0% | +9.1% | 11.4% | 2.65 | defensive, low return |
+| BasketLowRisk | low-vol top-5 basket (34-stock pool) | +33.6% | +8.0% | 6.5% | 1.88 | low drawdown, low return |
+| WideMultiFactor | small-cap + low-turn + reversal (138 stocks) | +46.6% | +10.7% | 20.9% | 1.66 | validates factors; sealed (charter: no small caps) |
+| IndustryRot | sector momentum rotation, top-3 sectors (large-cap stats) | +46.1% | +10.6% | 13.1% | 1.66 | real edge but below stock-level rotation |
+| PeadDrift | post-earnings drift, YoY ≥ 20%, 60d hold | +23.7% | +5.8% | 7.2% | 1.92 | thin but positive expectancy |
+| Supermarket (hold-through) | retail basket: 1 lot each, +15% sell, no stop | +61.8% | +13.6% | 18.6% | 2.22 | 86% win rate is an illusion |
+| SupermarketStop -6% | same + 6% stop | +93.7% | +19.2% | 18.5% | 1.34 | best supermarket variant, still below combo |
+
+Wave-capture conclusion: exits widened (chandelier) or adds-on-strength both
+degrade TopRot — its 30-day rotation plus MA20 break is already the best
+wave-capture for this pool. None of these experiments beats **ComboSteady +
+TopRot**, which remain the production pair.
+
+### Factor research (2026-10)
+
+Daily files now carry liquidity/valuation factor columns (`turn`, `peTTM`,
+`pbMRQ`, `psTTM`, `pcfNcfTTM`, `isST`) from the BaoStock feed, so strategies
+can read them like indicators. Cross-sectional Rank-IC vs 20-day forward
+returns (2023-01 ~ 2026-10):
+
+- **Wide universe** (138-stock random sample): small-cap premium confirmed
+  (small +1.86% vs large +0.77% per 20d), illiquidity IC +0.067/IR 0.38,
+  low turnover and low volatility positive — but **market-wide momentum is
+  REVERSED** (mom60 IC −0.075, IR −0.41).
+- **Curated pool**: mom10 slightly positive (IC +0.02) — TopRot's edge lives
+  in the selected universe (theme beta), not in the broad market. That is
+  both the source of its returns and its main risk.
+- Factor tilts on TopRot (low-vol/low-turn hard filters or score blends) all
+  degrade it (+172% → −3% ~ +30%): momentum and low-risk factors are
+  mutually exclusive here.
+- Small caps are excluded by charter (liquidity, delisting risk, sample
+  survivorship); the 34-stock pool's smallest float is ≈ ¥48B.
+
+
 ## Installation
 
 ### Native Installation
