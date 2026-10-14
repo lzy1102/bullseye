@@ -158,3 +158,6 @@ temp/
 /server_status.txt
 /status_result.txt
 /download_output.txt
+
+# Local AI-assistant artifacts
+.trae/
