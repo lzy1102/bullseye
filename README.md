@@ -30,6 +30,9 @@ A quantitative trading framework compatible with [Freqtrade](https://github.com/
     semantics; same-bar close fills remain the default
   - BaoStock daily files additionally persist liquidity/valuation factor columns
     (`turn`, `peTTM`, `pbMRQ`, `psTTM`, `pcfNcfTTM`, `isST`) for factor research
+- **Market-Structure Library** (`user_data/strategies/chan_structure.py`) - Chan-theory
+  fractals/strokes/pivots/divergence, lookahead-locked by tests; measured to add no
+  edge on top of the candle×indicator setups, so it ships as a charting aid only
 - **Hyperparameter Optimization** - Random search optimization with multiple loss functions
 - **Flexible Database** - SQLite (default), PostgreSQL, MySQL support
 - **Structured Exception Hierarchy** - Clear error handling with specific exception types
@@ -104,8 +107,37 @@ the first traded bar. Past performance does not guarantee future results.
 | WideMultiFactor | small-cap + low-turn + reversal (138 stocks) | +46.6% | +10.7% | 20.9% | 1.66 | validates factors; sealed (charter: no small caps) |
 | IndustryRot | sector momentum rotation, top-3 sectors (large-cap stats) | +46.1% | +10.6% | 13.1% | 1.66 | real edge but below stock-level rotation |
 | PeadDrift | post-earnings drift, YoY ≥ 20%, 60d hold | +23.7% | +5.8% | 7.2% | 1.92 | thin but positive expectancy |
+| MacdCandle | 8 candlestick+indicator setups, 3 slots | +233.4% | 37.5% | 8.78% | 3.49 | positive in all 4 sub-periods over 2016-2026 (+413.6%); only works on the hand-picked pool |
+| MacdCandle (aggressive) | same setups, 2 slots | +437.6% | 56.0% | 11.9% | 3.92 | higher concentration, same shape |
 | Supermarket (hold-through) | retail basket: 1 lot each, +15% sell, no stop | +61.8% | +13.6% | 18.6% | 2.22 | 86% win rate is an illusion |
 | SupermarketStop -6% | same + 6% stop | +93.7% | +19.2% | 18.5% | 1.34 | best supermarket variant, still below combo |
+
+**Candlestick × indicators** (see [docs/strategies.md](docs/strategies.md)): a
+17-pattern + 26-indicator-state library (`user_data/strategies/candle_patterns.py`),
+scored on forward returns and then traded. Volume is the pattern confirmer (three
+white soldiers + volume spike, hammer / hanging man + volume dry-up); the best top
+call is hanging man inside a Bollinger squeeze; divergence only works on pullbacks
+(inverted hammer + MACD top divergence). The single setups earn +25…58%, but **merging
+eight of them yields +233% at 8.78% drawdown** — many weak edges stack into one strong
+book. Two earlier conclusions flipped once diversification was in place: top-pattern
+exits *hurt* a single setup (+185% → +59%) but *help* the merged one (+241% → +305%),
+and 60-day holds beat 40. Like TopRot it only works on the curated pool — the 173-stock
+pool loses 4.4% — so treat it as a satellite leg, not a core strategy.
+
+> **⚠️ Fill-convention audit (2026-10-18).** House convention is **same-bar close**
+> (fee 0.001, T+1); all figures above use it and say so. Measured overnight gap:
+> mean entry gap −0.1…+0.1%, gap ≤ −5% on ~2% of entries (0% for MacdCandle), return
+> multiplier 0.997–1.002 — the convention is worth <0.3%, so it explains none of the
+> headline differences. Two false attributions were ruled out: price-limit locking
+> (disabling it changes nothing) and slot contention. One **real** engine/strategy bug
+> was found and left documented: under `fill_next_open`, `confirm_trade_entry` reads
+> the *execution* bar while the entry signal comes from the *previous* bar, so
+> TopRot loses 60% of its entries (117 → 47; with the gate removed it is 806).
+> `fill_next_open` is therefore **not** a valid robustness test for TopRot /
+> ComboSteady. MacdCandle has no such gate: its honest robustness haircut is
+> +413.6% → +314.4% over 2016-2026 (~24%). Ten-year same-bar results:
+> MacdCandle +413.6% (DD 13.9%), ComboSteady +364.0% (DD 18.2%), TopRot +356.1%
+> (DD 17.2%). `tests/test_candle_patterns.py` locks in no-lookahead correctness.
 
 Wave-capture conclusion: exits widened (chandelier) or adds-on-strength both
 degrade TopRot — its 30-day rotation plus MA20 break is already the best

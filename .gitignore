@@ -123,6 +123,15 @@ user_data/hyperopt/
 !config.json
 !package.json
 !package-lock.json
+
+# Broker credentials - never commit (fund account, shareholder IDs, machine fingerprint)
+local_profile.json
+user_data/local_profile.json
+*_profile.json
+# ...but the placeholder template is documentation, ship it
+!local_profile.example.json
+!user_data/local_profile.example.json
+!.github/
 *.pkl
 *.h5
 *.hdf5

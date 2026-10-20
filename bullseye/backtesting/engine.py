@@ -1941,7 +1941,15 @@ class BacktestEngine:
 
         Signal columns come from the precomputed per-pair dataframe; only
         user callbacks (custom_exit / confirm_trade_exit) run per candle.
+
+        With backtest.fill_next_open the fill happens at this candle's OPEN,
+        i.e. before its close is known. Callbacks (custom_exit,
+        custom_exit_price, confirm_trade_exit, custom_stoploss) must therefore
+        see the execution price, not the not-yet-observable close - otherwise a
+        strategy could decide on the close and fill at the same day's open
+        (lookahead in the opposite direction).
         """
+        cb_rate = current_rate if exit_signal_rate is None else exit_signal_rate
         # Track intra-candle extremes (previously close-only, so trailing
         # stops missed high/low spikes and triggered late/never).
         trade.update_rate(current_high)
@@ -1951,8 +1959,8 @@ class BacktestEngine:
         # Gross ratio (strategy semantics) + net ratio (fee-aware, for
         # trigger decisions). ROI/trailing/custom previously fired on gross,
         # systematically overstating after-fee returns.
-        profit_ratio = trade.calc_profit_ratio(current_rate)
-        net_ratio = self._net_profit_ratio(trade, current_rate)
+        profit_ratio = trade.calc_profit_ratio(cb_rate)
+        net_ratio = self._net_profit_ratio(trade, cb_rate)
 
         # 0. Enforce T+1/T+N settlement: the position cannot be sold before
         # its settlement date (compared against simulated time, NOT wall clock).
@@ -2018,7 +2026,7 @@ class BacktestEngine:
                     pair=trade.pair,
                     trade=trade,
                     current_time=current_date,
-                    current_rate=current_rate,
+                    current_rate=cb_rate,
                     current_profit=net_ratio,
                 ),
                 None,
@@ -2144,7 +2152,7 @@ class BacktestEngine:
             lambda: strategy.custom_roi(
                 pair=trade.pair,
                 current_time=current_date,
-                current_rate=current_rate,
+                current_rate=cb_rate,
                 current_profit=net_ratio,
             ),
             None,
@@ -2210,7 +2218,7 @@ class BacktestEngine:
                 pair=trade.pair,
                 trade=trade,
                 current_time=current_date,
-                current_rate=current_rate,
+                current_rate=cb_rate,
                 current_profit=net_ratio,
                 exit_reason=None,
             ),
@@ -2229,7 +2237,7 @@ class BacktestEngine:
                             pair=trade.pair,
                             trade=trade,
                             current_time=current_date,
-                            proposed_rate=current_rate,
+                            proposed_rate=cb_rate,
                             current_profit=net_ratio,
                             exit_tag=exit_reason,
                         ),

@@ -1873,6 +1873,67 @@ class TestFillNextOpen:
         assert trade.exit_date == dates[5]
         assert trade.close_rate == pytest.approx(90.0)
 
+    def test_custom_exit_sees_execution_price_not_close(self):
+        """custom_exit must decide on the price the fill will actually use.
+
+        With fill_next_open the fill happens at the open; feeding the callback
+        the (not yet observable) close would let a strategy decide on the close
+        and still fill at the same day's open.
+        """
+        seen = {}
+
+        class ProbeStrategy(IStrategy):
+            timeframe = "1d"
+            startup_candle_count = 1
+            minimal_roi = {}
+            stoploss = -1.0
+
+            def populate_indicators(self, dataframe, metadata):
+                return dataframe
+
+            def populate_entry_trend(self, dataframe, metadata):
+                dataframe["enter_long"] = 0
+                dataframe.loc[dataframe.index == 0,
+                              ["enter_long", "enter_tag"]] = (1, "sig_in")
+                return dataframe
+
+            def populate_exit_trend(self, dataframe, metadata):
+                dataframe["exit_long"] = 0
+                return dataframe
+
+            def custom_exit(self, pair, trade, current_time, current_rate,
+                            current_profit, **kwargs):
+                seen.setdefault(pair, []).append(current_rate)
+                # Exit on the bar whose open is 90 (close is flat at 100).
+                return "probe" if current_rate < 100.0 else None
+
+        n = 8
+        dates = pd.date_range("2024-01-01", periods=n, freq="1d")
+        opens = [100.0, 100.0, 100.0, 100.0, 100.0, 90.0, 90.0, 90.0]
+        data = {"BTC/USDT": pd.DataFrame({
+            "date": dates, "open": opens,
+            "high": [max(o, 100.0) + 1 for o in opens],
+            "low": [min(o, 100.0) - 1 for o in opens],
+            "close": [100.0] * n, "volume": [1000.0] * n,
+        })}
+        config = Config()
+        config.set("dry_run_wallet", 1000)
+        config.set("stake_amount", 100)
+        config.set("max_open_trades", 1)
+        config.set("backtest.fill_next_open", True)
+        engine = BacktestEngine(config)
+        result = engine.run(
+            strategy_class=ProbeStrategy, pairlist=["BTC/USDT"],
+            timeframe="1d", data=data, initial_balance=1000, stake_amount=100,
+        )
+        rates = seen.get("BTC/USDT", [])
+        assert rates, "custom_exit was never called"
+        # Every rate handed to the callback is a tradable price, never the
+        # flat 100 close that only becomes known after the open.
+        assert all(r in (100.0, 90.0) for r in rates)
+        assert result.trades[0].close_rate == pytest.approx(90.0)
+        assert result.trades[0].exit_reason == "probe"
+
 
 class TestTuShareDividends:
     """TuShare dividend calendar parsing (stubbed pro API, no network)."""

@@ -10,6 +10,7 @@
 - 策略文档（逻辑/参数/收益全记录）：[`docs/strategies.md`](docs/strategies.md)
 - 网关/实盘桥接开发标准：[`docs/gateway-development.md`](docs/gateway-development.md)
 - 趋势判断方法基准测试：[`docs/trend-detection-benchmark.md`](docs/trend-detection-benchmark.md)
+- 缠论结构库（`user_data/strategies/chan_structure.py`）：分型/笔/中枢/背驰，**实测无增量、未接入策略**，仅作看盘结构标注（无前视测试保证）
 
 ## 核心特性
 
@@ -91,8 +92,31 @@ TopRot 每≤30天换持池内10日动量前2，−10%认错清仓，年线（MA
 | WideMultiFactor | 小市值+低换手+反转（138只） | +46.6% | +10.7% | 20.9% | 1.66 | 验证因子；封存（不做小市值） |
 | IndustryRot | 行业动量前3（大票口径） | +46.1% | +10.6% | 13.1% | 1.66 | 有效但弱于个股轮动 |
 | PeadDrift | 财报后漂移（同比≥20%，持60天） | +23.7% | +5.8% | 7.2% | 1.92 | 薄但正期望 |
+| MacdCandle | 8个"形态+指标"套装（均线/MACD/KDJ/BOLL/量），3槽 | +233.4% | 37.5% | 8.78% | 3.49 | 2016-2026 四个子区间全正（+413.6%），但只在人工精选池上成立 |
+| MacdCandle（激进版） | 同套装但2槽 | +437.6% | 56.0% | 11.9% | 3.92 | 仓位更集中，形态一致 |
 | Supermarket（死扛原版） | 超市战法：一手一只+15%卖 | +61.8% | +13.6% | 18.6% | 2.22 | 86%胜率是幻觉 |
 | SupermarketStop −6% | 加6%止损 | +93.7% | +19.2% | 18.5% | 1.34 | 超市系最优，仍逊于组合 |
+
+**K线形态 × 指标**（详见 [`docs/strategies.md`](docs/strategies.md)）：17 个形态 × 26 个
+指标状态（`user_data/strategies/candle_patterns.py`），先用前瞻收益筛、再用真实回测验。
+**量能是形态的确认器**（放量+红三兵、缩量+锤子/上吊线）；最好的顶部组合是 **BOLL收口+
+上吊线**；背离只在回踩场景有效（倒锤子+MACD顶背离）。单套装只能赚 +25~58%，但
+**8个套装合并后 +233%、回撤仅 8.78%** —— 一堆弱 edge 叠成强结果。分散化之后两个早前结论
+被推翻：顶部形态卖出对**单**套装有害（+185%→+59%），对**合并**套装却是加分项
+（+241%→+305%）；持仓 60 天优于 40 天。和 TopRot 一样吃精选池（173只宽池 −4.4%），
+定位是卫星腿而非主策略。
+
+> **⚠️ 成交口径审计（2026-10-18）。** 项目口径定为**同根收盘成交**（费0.001、T+1），
+> 上表所有数字均出自该口径。实测跳空：进场跳空均值 −0.1~+0.1%，跳空 ≤−5% 约2%
+> （MacdCandle 为 0%），收益乘数 0.997~1.002 —— **口径差异值不到 0.3%**，解释不了任何
+> 量级的结果差别。两个错误归因被排除：涨跌停锁单（关掉无变化）、槽位争抢（6/12/20槽
+> 都是47笔）。查出一个**真实的引擎/策略缺陷**：next-open 模式下
+> `confirm_trade_entry` 读的是**执行bar**，而进场信号来自**前一根**，导致 TopRot 少掉
+> 60% 的交易（117→47；关掉门禁则是806笔）。因此 `fill_next_open` **不能**用来给
+> TopRot/ComboSteady 做稳健性检验。MacdCandle 不依赖该门禁，它的真实稳健性折价是
+> 十年 +413.6% → **+314.4%**（约 −24%）。同根收盘十年结果：MacdCandle +413.6%
+> (DD 13.9%)、ComboSteady +364.0% (DD 18.2%)、TopRot +356.1% (DD 17.2%)。
+> `tests/test_candle_patterns.py` 锁死无未来函数。
 
 对照基准（同窗口）：7只银行买入持有≈+99%，18只龙头≈+58%。
 说明：动量/轮动收益集中在2024–2026 AI主题牛市；带年线/周线门禁的策略依赖
@@ -246,6 +270,16 @@ execution:
 桥接服务契约（请求/返回字段、状态枚举、对账与熔断要求）与验收清单见
 [`docs/gateway-development.md`](docs/gateway-development.md)，
 参考实现 `bullseye/gateway/template/gateway_template.py`。
+
+**同花顺柜台直连（无 miniQMT 的散户通道）**：`ths-trade-client`（[ths_rea](https://github.com/lzy1102/ths_rea)，MIT）是同花顺下单协议的纯 Python 客户端——
+不需要同花顺客户端、不扫码、不输密码，Windows/Linux/Docker 均可，换券商只需重抓一份
+`local_profile.json`。仓库已内置只读网关 `bullseye/gateway/stock/ths_gateway.py`
+（账户/持仓/委托/行情推送，`send_order`/`cancel_order` 暂**刻意禁用**）。
+解禁需要两件事：① 补撤单（用仓库自带的 `ths-capture-orders` 抓帧）；
+② 下单必须关闭自动重试并改为"先查当日委托、对账后再重发"，否则会重复买入。
+凭证 `local_profile.json` 含账号/股东号/设备指纹，已在 `.gitignore` 中。
+Windows 上双击 `scripts\capture_ths_profile.bat` 即可一键抓取（自动装依赖、等客户端启动、
+抓完校验必填字段并打印下一步；`--timeout` / `--pid` 可透传）。
 
 ## 测试
 

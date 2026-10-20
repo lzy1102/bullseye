@@ -142,6 +142,33 @@ future:
 #   order_timeout: 10          # seconds to wait for order confirmation
 #   order_poll_interval: 0.5   # seconds between status polls
 
+# --------- THS (同花顺) counter gateway: ths-trade-client ---------
+# Retail A-share accounts without miniQMT: talks the THS counter protocol
+# directly in pure Python (no THS client, no QR/password, Linux/Docker OK).
+#   pip install ths-trade-client
+#
+# Login parameters live in a profile FILE, not in this config (it holds the
+# fund account + shareholder IDs). Template: user_data/local_profile.example.json
+#   cp user_data/local_profile.example.json user_data/local_profile.json
+# Best: with the xiadan (同花顺下单程序) running and logged in once, run
+#   ths-capture-profile        # -> local_profile.json (captures 设备指纹 + 站点表)
+# Required profile fields: zjzh(资金账号) / gdzh_sh(沪股东号, A开头) / gdzh_sz(深股东号)
+# Optional: name(户名) deptid(营业部) verinfo(券商标记) host/port(柜台) hosts(站点表) machine(设备指纹)
+#
+# NOTE: send_order is implemented but hard-gated by _LIVE_TRADING_ENABLED
+# (False) until ths-trade-client supports cancel (撤单). Query-only today.
+# market_type: custom
+# custom:
+#   gateway: "bullseye.gateway.stock.ths_gateway.ThsGateway"
+#   profile: "user_data/local_profile.json"   # path, or THS_PROFILE env var
+#   heartbeat: 30                            # counter keepalive seconds (0 = off)
+#   kill_switch_file: "user_data/KILL_TRADING"  # create file -> no new orders
+#   confirm_timeout: 10                      # seconds to wait for order confirmation
+#   poll_interval: 0.5                       # seconds between status polls
+#   reconcile_grace: 3.0                     # reconcile wait before one resend
+#   enforce_trading_window: true             # local 09:30-11:30 / 13:00-15:00 guard
+#   datafeed: baostock                        # K-lines still come from baostock
+
 # ==================== International Market Configuration ====================
 international:
   # Gateway: ib, tap, da

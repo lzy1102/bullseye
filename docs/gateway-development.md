@@ -156,7 +156,118 @@ class MyBrokerGateway(BaseGateway):
         return self._to_order_data(raw)  # map to OrderData + Status
 ```
 
-## 6. Acceptance checklist
+## 6. THS (同花顺) counter gateway — retail accounts without miniQMT
+
+`ths-trade-client` (<https://github.com/lzy1102/ths_rea>, MIT) is a pure-Python
+client for the THS counter protocol used by the xiadan client: login → bootstrap
+→ precheck → queries → 沪/深 × 买/卖 × 市价/限价. No THS client process, no QR
+code, no password; verified on Windows/Linux/Docker. Broker-agnostic: a new
+broker only needs a new `local_profile.json` (account, SH/SZ shareholder IDs,
+name, `deptid`, `verinfo`, site list).
+
+```bash
+pip install ths-trade-client
+ths-capture-profile            # with xiadan.exe running -> local_profile.json
+```
+
+```yaml
+market_type: custom
+custom:
+  gateway: "bullseye.gateway.stock.ths_gateway.ThsGateway"
+  profile: "user_data/local_profile.json"
+  heartbeat: 30                  # counter keepalive seconds (0 = off)
+  kill_switch_file: "user_data/KILL_TRADING"
+  confirm_timeout: 10            # order confirmation budget
+  poll_interval: 0.5
+  reconcile_grace: 3.0           # reconcile wait before the single resend
+  enforce_trading_window: true   # local session guard
+  datafeed: baostock             # K-lines still come from baostock
+```
+
+Every key under `custom:` except `gateway` is forwarded to `connect()`
+(`bot.py::_gateway_connect_kwargs`), so the block above is the full surface.
+
+### Login parameters (`local_profile.json`)
+
+They live in a **file**, not in the YAML: the fund account and shareholder IDs
+are credentials. Template: `user_data/local_profile.example.json` (git-ignored
+once renamed to `local_profile.json`).
+
+| Field | Required | Meaning |
+|---|---|---|
+| `zjzh` | ✅ | 资金账号 — the only credential; no QR code, no password |
+| `gdzh_sh` | ✅ | 上海股东号, **starts with `A`** (e.g. `A123456789`) |
+| `gdzh_sz` | ✅ | 深圳股东号, **digits only** (e.g. `0123456789`) |
+| `name` | recommended | 户名, GBK 1–6 bytes (1–3 Chinese chars) |
+| `deptid` | optional | 营业部 ID (default `1302`) |
+| `verinfo` | optional | 券商标记 (`gtja` = 国泰君安/国泰海通) |
+| `host` / `port` | optional | 主柜台 (default `114.141.180.27:8002`) — **change per broker** |
+| `hosts` | optional | 站点表 `[{"ip","port","name","area"}]` for failover |
+| `machine` | optional | 设备指纹; counter does not validate it, auto-collected when missing |
+
+Fastest path on Windows — double-click:
+
+```
+scripts\capture_ths_profile.bat
+```
+
+It checks Python, installs `ths-trade-client[capture]`, waits for `xiadan.exe`,
+runs the capture straight into `user_data/local_profile.json`, validates the
+required fields and prints the next commands. Extra flags pass through
+(`--timeout 600`, `--pid 12345`). The `.bat` is deliberately ASCII-only
+(`cmd.exe` mis-parses non-ASCII batch files); the Chinese UI lives in
+`scripts/capture_ths_profile.py`, which fixes the console code page itself so
+the output is readable however it is launched.
+
+Doing it manually is equivalent: run `ths-capture-profile` once with the
+broker's xiadan client logged in — it fills every field including the device
+fingerprint and the site list. A different broker needs no code change, only a
+new profile (the DES key and frame format are client-level constants, identical
+across brokers).
+
+`local_profile.json` holds the fund account, shareholder IDs and the device
+fingerprint — it is git-ignored and must never be committed.
+
+### Current status: placement implemented but gated; cancel still missing
+
+`bullseye/gateway/stock/ths_gateway.py` implements `connect`, `close`,
+`query_account`, `query_position`, `query_order`, `query_contract`, quote
+pushes (`on_push` → throttled `on_tick`) and `send_order`.
+
+`send_order` is written for the fact that **order placement is not
+idempotent**, so it never trusts a bare retry:
+
+1. guards — master switch `_LIVE_TRADING_ENABLED`, kill-switch file, local
+   A-share session window (`enforce_trading_window`);
+2. local dedup — the same `client_order_id` is never sent twice;
+3. **reconcile before send** — if 当日委托 already holds a live order with the
+   same symbol/side/volume, adopt its 委托编号 instead of sending;
+4. submit with `TradeClient.auto_reconnect` temporarily disabled (its built-in
+   "retry once" is fine for queries and would double-buy for orders);
+5. on an ambiguous failure (dropped socket) → reconcile again, and resend **at
+   most once**, only if the order is provably absent.
+
+`client_order_id → 委托编号` mapping, `reconcile_orders()` (adopts foreign
+orders as `THS-EXT-<no>`), `confirm_order()` (publishes status changes and fill
+deltas) and the `Status` mapping round it out. Parsing of the GBK key=value
+replies is defensive throughout.
+
+`cancel_order` still raises `NotImplementedError`, and
+`_LIVE_TRADING_ENABLED` defaults to **False**: without 撤单 an exit that misses
+becomes an unmanageable position, so the master switch stays off until cancel
+lands. Everything above is covered offline by `tests/test_ths_gateway.py`
+(scripted fake counter - no network, no ths-trade-client).
+
+### Rollout order
+
+1. Read-only: run `trade --dry` and reconcile account/positions against the
+   broker app. Confirms login, bootstrap and field semantics.
+2. Add cancel (capture the frame with `ths-capture-orders`, implement, cover in
+   offline tests).
+3. Flip `_LIVE_TRADING_ENABLED` behind an explicit env/config switch, dry-run
+   first against 模拟盘, then a single 100-share order.
+
+## 7. Acceptance checklist
 
 - [ ] All 8 required methods implemented; `close()` idempotent
 - [ ] `send_order` returns a queryable, stable id (never `None` on success)
