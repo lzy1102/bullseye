@@ -97,6 +97,10 @@ TopRot 每≤30天换持池内10日动量前2，−10%认错清仓，年线（MA
 | Supermarket（死扛原版） | 超市战法：一手一只+15%卖 | +61.8% | +13.6% | 18.6% | 2.22 | 86%胜率是幻觉 |
 | SupermarketStop −6% | 加6%止损 | +93.7% | +19.2% | 18.5% | 1.34 | 超市系最优，仍逊于组合 |
 
+> 分钟级研究另有两条封存线：日内/隔夜信号（EodBounce / TrendDayHold）与日线 regime ×
+> 30m 形态（MTF），均因费用和样本外不稳定证伪，详见
+> [`docs/strategies.md`](docs/strategies.md) 的「日内/隔夜信号实测」「多时间框架实测」两节。
+
 **K线形态 × 指标**（详见 [`docs/strategies.md`](docs/strategies.md)）：17 个形态 × 26 个
 指标状态（`user_data/strategies/candle_patterns.py`），先用前瞻收益筛、再用真实回测验。
 **量能是形态的确认器**（放量+红三兵、缩量+锤子/上吊线）；最好的顶部组合是 **BOLL收口+

@@ -112,6 +112,11 @@ the first traded bar. Past performance does not guarantee future results.
 | Supermarket (hold-through) | retail basket: 1 lot each, +15% sell, no stop | +61.8% | +13.6% | 18.6% | 2.22 | 86% win rate is an illusion |
 | SupermarketStop -6% | same + 6% stop | +93.7% | +19.2% | 18.5% | 1.34 | best supermarket variant, still below combo |
 
+> Two intraday research lines are also archived: intraday/overnight signals
+> (EodBounce / TrendDayHold) and daily regime × 30m patterns (MTF). Both failed
+> on costs and out-of-sample instability; see the "日内/隔夜信号实测" and
+> "多时间框架实测" sections in [docs/strategies.md](docs/strategies.md).
+
 **Candlestick × indicators** (see [docs/strategies.md](docs/strategies.md)): a
 17-pattern + 26-indicator-state library (`user_data/strategies/candle_patterns.py`),
 scored on forward returns and then traded. Volume is the pattern confirmer (three
