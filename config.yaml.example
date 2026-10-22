@@ -112,11 +112,13 @@ future:
   gateway: ctp
 
   # CTP Configuration (SimNow by default)
+  # SimNow 环境一（网上开户默认）: td 30001 / md 30011
+  # SimNow 7x24 环境（CTP API 测试）: td 40001 / md 40011
   userid: ""
   password: ""
   brokerid: "9999"
-  td_address: "tcp://180.168.146.187:10130"
-  md_address: "tcp://180.168.146.187:10131"
+  td_address: "tcp://182.254.243.31:30001"
+  md_address: "tcp://182.254.243.31:30011"
 
   # Real trading (optional)
   appid: ""

@@ -67,11 +67,16 @@ RUN python -m venv /app/venv && \
         "exchange-calendars>=4.5.0" "openctp-ctp>=6.7.0"
 
 # UTF-8 locale (C++ extensions such as py_mini_racer via akshare abort
-# without it: "locale::facet::_S_create_c_locale name not valid")
+# without it: "locale::facet::_S_create_c_locale name not valid").
+# openctp-ctp additionally aborts unless the CTP libraries can load
+# zh_CN.GB18030 / en_US.UTF-8, so those are generated here too.
 RUN apt-get update && apt-get install -y --no-install-recommends locales \
     && rm -rf /var/lib/apt/lists/* \
-    && sed -i -e 's/# C.UTF-8 UTF-8/C.UTF-8 UTF-8/' /etc/locale.gen \
-    && locale-gen C.UTF-8
+    && sed -i -e 's/# C.UTF-8 UTF-8/C.UTF-8 UTF-8/' \
+             -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' \
+             -e 's/# zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen \
+    && locale-gen C.UTF-8 en_US.UTF-8 zh_CN.UTF-8 \
+    && localedef -i zh_CN -f GB18030 zh_CN.GB18030
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
 # Copy application code

@@ -120,8 +120,8 @@ class CtpGateway(BaseGateway):
             user_id="your_id",
             password="your_pwd",
             broker_id="9999",
-            td_address="tcp://180.168.146.187:10130",
-            md_address="tcp://180.168.146.187:10131",
+            td_address="tcp://182.254.243.31:30001",
+            md_address="tcp://182.254.243.31:30011",
             auth_code="",
             app_id="",
         )
@@ -157,8 +157,8 @@ class CtpGateway(BaseGateway):
             user_id: Investor ID
             password: Password
             broker_id: Broker ID (SimNow: "9999")
-            td_address: Trading server address (e.g. tcp://180.168.146.187:10130)
-            md_address: Market data server address (e.g. tcp://180.168.146.187:10131)
+            td_address: Trading server address (e.g. tcp://182.254.243.31:30001)
+            md_address: Market data server address (e.g. tcp://182.254.243.31:30011)
         Optional kwargs:
             auth_code: Auth code for real trading
             app_id: Application ID
@@ -184,21 +184,21 @@ class CtpGateway(BaseGateway):
         Path(con_dir).mkdir(parents=True, exist_ok=True)
 
         # --- Market data API ---
-        md_flow_path = str(Path(con_dir) / "Md").encode()
+        md_flow_path = str(Path(con_dir) / "Md")
         self._md_api = mdapi.CThostFtdcMdApi.CreateFtdcMdApi(md_flow_path)
         self._md_spi = _MdSpi(self)
         self._md_spi.api = self._md_api
         self._md_api.RegisterSpi(self._md_spi)
-        self._md_api.RegisterFront(md_addr.encode())
+        self._md_api.RegisterFront(md_addr)
         self._md_api.Init()
 
         # --- Trader API ---
-        td_flow_path = str(Path(con_dir) / "Td").encode()
+        td_flow_path = str(Path(con_dir) / "Td")
         self._td_api = tdapi.CThostFtdcTraderApi.CreateFtdcTraderApi(td_flow_path)
         self._td_spi = _TdSpi(self)
         self._td_spi.api = self._td_api
         self._td_api.RegisterSpi(self._td_spi)
-        self._td_api.RegisterFront(td_addr.encode())
+        self._td_api.RegisterFront(td_addr)
         self._td_api.SubscribePrivateTopic(0)
         self._td_api.SubscribePublicTopic(0)
         self._td_api.Init()
@@ -237,11 +237,11 @@ class CtpGateway(BaseGateway):
             return ""
 
         field = tdapi.CThostFtdcInputOrderField()
-        field.BrokerID = self._broker_id.encode()
-        field.InvestorID = self._user_id.encode()
-        field.UserID = self._user_id.encode()
-        field.InstrumentID = str(req["symbol"]).encode()
-        field.ExchangeID = str(req.get("exchange", "")).encode()
+        field.BrokerID = self._broker_id
+        field.InvestorID = self._user_id
+        field.UserID = self._user_id
+        field.InstrumentID = str(req["symbol"])
+        field.ExchangeID = str(req.get("exchange", ""))
         field.LimitPrice = float(req.get("price", 0))
         field.VolumeTotalOriginal = int(req.get("volume", 0))
         field.MinVolume = 1
@@ -250,23 +250,23 @@ class CtpGateway(BaseGateway):
 
         # Direction
         direction_enum = req.get("direction", Direction.LONG)
-        field.Direction = DIRECTION_VT2CTP.get(direction_enum, "0").encode()
+        field.Direction = DIRECTION_VT2CTP.get(direction_enum, "0")
 
         # Offset (open / close)
         offset_enum = req.get("offset", Offset.OPEN)
-        field.CombOffsetFlag = OFFSET_VT2CTP.get(offset_enum, "0").encode()
+        field.CombOffsetFlag = OFFSET_VT2CTP.get(offset_enum, "0")
 
         # Order type
         order_type_val = req.get("order_type", OrderType.LIMIT)
-        field.OrderPriceType = ORDERTYPE_VT2CTP.get(order_type_val, "2").encode()
+        field.OrderPriceType = ORDERTYPE_VT2CTP.get(order_type_val, "2")
 
         # Other required fields
-        field.CombHedgeFlag = b"1"       # Speculation
-        field.ContingentCondition = b"1"  # Immediately
-        field.ForceCloseReason = b"0"     # Not force close
-        field.TimeCondition = b"3"        # GFD
-        field.VolumeCondition = b"2"      # AV
-        field.OrderRef = str(self._td_spi._order_ref).encode()
+        field.CombHedgeFlag = "1"       # Speculation
+        field.ContingentCondition = "1"  # Immediately
+        field.ForceCloseReason = "0"     # Not force close
+        field.TimeCondition = "3"        # GFD
+        field.VolumeCondition = "2"      # AV
+        field.OrderRef = str(self._td_spi._order_ref)
 
         n = self._td_api.ReqOrderInsert(field, 0)
         if n != 0:
@@ -293,15 +293,15 @@ class CtpGateway(BaseGateway):
             return False
 
         field = tdapi.CThostFtdcInputOrderActionField()
-        field.BrokerID = self._broker_id.encode()
-        field.InvestorID = self._user_id.encode()
-        field.UserID = self._user_id.encode()
-        field.OrderRef = order_ref.encode()
+        field.BrokerID = self._broker_id
+        field.InvestorID = self._user_id
+        field.UserID = self._user_id
+        field.OrderRef = order_ref
         field.FrontID = int(front_id)
         field.SessionID = int(session_id)
-        field.ActionFlag = b"0"          # Delete
-        field.InstrumentID = str(req.get("symbol", "")).encode()
-        field.ExchangeID = str(req.get("exchange", "")).encode()
+        field.ActionFlag = "0"          # Delete
+        field.InstrumentID = str(req.get("symbol", ""))
+        field.ExchangeID = str(req.get("exchange", ""))
         field.LimitPrice = 0
         field.VolumeChange = 0
 
@@ -314,8 +314,8 @@ class CtpGateway(BaseGateway):
             return None
         # Request async query; result arrives via OnRspQryTradingAccount callback
         ctp_req = tdapi.CThostFtdcQryTradingAccountField()
-        ctp_req.BrokerID = self._broker_id.encode()
-        ctp_req.InvestorID = self._user_id.encode()
+        ctp_req.BrokerID = self._broker_id
+        ctp_req.InvestorID = self._user_id
         self._td_api.ReqQryTradingAccount(ctp_req, 0)
         return self._td_spi._cached_account
 
@@ -324,8 +324,8 @@ class CtpGateway(BaseGateway):
         if not self._td_spi or not self._td_api:
             return []
         ctp_req = tdapi.CThostFtdcQryInvestorPositionField()
-        ctp_req.BrokerID = self._broker_id.encode()
-        ctp_req.InvestorID = self._user_id.encode()
+        ctp_req.BrokerID = self._broker_id
+        ctp_req.InvestorID = self._user_id
         self._td_api.ReqQryInvestorPosition(ctp_req, 0)
         return list(self._td_spi._cached_positions.values())
 
@@ -355,14 +355,14 @@ class CtpGateway(BaseGateway):
         """Subscribe to real-time market data."""
         self._subscribed_symbols = list(symbols)
         if self._md_api and self._md_spi and self._md_spi._login_success:
-            encoded = [s.encode() for s in symbols]
+            encoded = [s for s in symbols]
             self._md_api.SubscribeMarketData(encoded, len(encoded))
             self.on_log(f"Subscribed to {len(symbols)} symbols")
 
     def unsubscribe_quote(self, symbols: List[str]) -> None:
         """Unsubscribe from market data."""
         if self._md_api:
-            encoded = [s.encode() for s in symbols]
+            encoded = [s for s in symbols]
             self._md_api.UnSubscribeMarketData(encoded, len(encoded))
 
     # =====================================================================
@@ -403,9 +403,9 @@ class _MdSpi(mdapi.CThostFtdcMdSpi if CTP_AVAILABLE else object):
         """Connection established → auto login."""
         self.gw.on_log("CTP market data connected")
         req = mdapi.CThostFtdcReqUserLoginField()
-        req.BrokerID = self.gw._broker_id.encode()
-        req.UserID = self.gw._user_id.encode()
-        req.Password = self.gw._password.encode()
+        req.BrokerID = self.gw._broker_id
+        req.UserID = self.gw._user_id
+        req.Password = self.gw._password
         self.api.ReqUserLogin(req, 0)
 
     def OnFrontDisconnected(self, nReason: int) -> None:
@@ -424,7 +424,7 @@ class _MdSpi(mdapi.CThostFtdcMdSpi if CTP_AVAILABLE else object):
         if pRspInfo and pRspInfo.ErrorID != 0:
             self.gw.on_log(
                 f"CTP market data login failed: [{pRspInfo.ErrorID}] "
-                f"{pRspInfo.ErrorMsg.decode('gbk')}"
+                f"{_to_str(pRspInfo.ErrorMsg)}"
             )
             return
 
@@ -434,7 +434,7 @@ class _MdSpi(mdapi.CThostFtdcMdSpi if CTP_AVAILABLE else object):
 
         # Re-subscribe previously cached symbols
         if self.gw._subscribed_symbols:
-            encoded = [s.encode() for s in self.gw._subscribed_symbols]
+            encoded = [s for s in self.gw._subscribed_symbols]
             self.api.SubscribeMarketData(encoded, len(encoded))
 
     def OnRspSubMarketData(
@@ -446,10 +446,10 @@ class _MdSpi(mdapi.CThostFtdcMdSpi if CTP_AVAILABLE else object):
     ) -> None:
         """Subscription response."""
         if pRspInfo and pRspInfo.ErrorID != 0:
-            symbol = pSpecificInstrument.InstrumentID.decode()
+            symbol = _to_str(pSpecificInstrument.InstrumentID)
             self.gw.on_log(
                 f"Subscribe failed for {symbol}: "
-                f"[{pRspInfo.ErrorID}] {pRspInfo.ErrorMsg.decode('gbk')}"
+                f"[{pRspInfo.ErrorID}] {_to_str(pRspInfo.ErrorMsg)}"
             )
 
     def OnRspUnSubMarketData(
@@ -467,7 +467,7 @@ class _MdSpi(mdapi.CThostFtdcMdSpi if CTP_AVAILABLE else object):
         if not pDepthMarketData:
             return
 
-        symbol = pDepthMarketData.InstrumentID.decode()
+        symbol = _to_str(pDepthMarketData.InstrumentID)
         if not symbol:
             return
 
@@ -475,7 +475,7 @@ class _MdSpi(mdapi.CThostFtdcMdSpi if CTP_AVAILABLE else object):
             gateway_name=self.gw.gateway_name,
             symbol=symbol,
             exchange=EXCHANGE_CTP2VT.get(
-                getattr(pDepthMarketData, "ExchangeID", "").decode() if hasattr(pDepthMarketData, "ExchangeID") else "",
+                _to_str(getattr(pDepthMarketData, "ExchangeID", "")) if hasattr(pDepthMarketData, "ExchangeID") else "",
                 "",
             ),
             last_price=pDepthMarketData.LastPrice,
@@ -503,7 +503,7 @@ class _MdSpi(mdapi.CThostFtdcMdSpi if CTP_AVAILABLE else object):
         if pRspInfo and pRspInfo.ErrorID != 0:
             self.gw.on_log(
                 f"CTP md error: [{pRspInfo.ErrorID}] "
-                f"{pRspInfo.ErrorMsg.decode('gbk')}"
+                f"{_to_str(pRspInfo.ErrorMsg)}"
             )
 
 
@@ -550,17 +550,17 @@ class _TdSpi(tdapi.CThostFtdcTraderSpi if CTP_AVAILABLE else object):
 
     def _authenticate(self) -> None:
         req = tdapi.CThostFtdcReqAuthenticateField()
-        req.BrokerID = self.gw._broker_id.encode()
-        req.UserID = self.gw._user_id.encode()
-        req.AuthCode = self.gw._auth_code.encode()
-        req.AppID = self.gw._app_id.encode()
+        req.BrokerID = self.gw._broker_id
+        req.UserID = self.gw._user_id
+        req.AuthCode = self.gw._auth_code
+        req.AppID = self.gw._app_id
         self.api.ReqAuthenticate(req, 0)
 
     def _login(self) -> None:
         req = tdapi.CThostFtdcReqUserLoginField()
-        req.BrokerID = self.gw._broker_id.encode()
-        req.UserID = self.gw._user_id.encode()
-        req.Password = self.gw._password.encode()
+        req.BrokerID = self.gw._broker_id
+        req.UserID = self.gw._user_id
+        req.Password = self.gw._password
         self.api.ReqUserLogin(req, 0)
 
     def OnRspAuthenticate(
@@ -569,7 +569,7 @@ class _TdSpi(tdapi.CThostFtdcTraderSpi if CTP_AVAILABLE else object):
         if pRspInfo and pRspInfo.ErrorID != 0:
             self.gw.on_log(
                 f"CTP auth failed: [{pRspInfo.ErrorID}] "
-                f"{pRspInfo.ErrorMsg.decode('gbk')}"
+                f"{_to_str(pRspInfo.ErrorMsg)}"
             )
             return
         self.gw.on_log("CTP authentication success")
@@ -581,7 +581,7 @@ class _TdSpi(tdapi.CThostFtdcTraderSpi if CTP_AVAILABLE else object):
         if pRspInfo and pRspInfo.ErrorID != 0:
             self.gw.on_log(
                 f"CTP login failed: [{pRspInfo.ErrorID}] "
-                f"{pRspInfo.ErrorMsg.decode('gbk')}"
+                f"{_to_str(pRspInfo.ErrorMsg)}"
             )
             return
 
@@ -595,8 +595,8 @@ class _TdSpi(tdapi.CThostFtdcTraderSpi if CTP_AVAILABLE else object):
 
         # Confirm settlement → triggers contract query
         req = tdapi.CThostFtdcSettlementInfoConfirmField()
-        req.BrokerID = self.gw._broker_id.encode()
-        req.InvestorID = self.gw._user_id.encode()
+        req.BrokerID = self.gw._broker_id
+        req.InvestorID = self.gw._user_id
         self._req_id += 1
         self.api.ReqSettlementInfoConfirm(req, self._req_id)
 
@@ -618,10 +618,10 @@ class _TdSpi(tdapi.CThostFtdcTraderSpi if CTP_AVAILABLE else object):
         if not pInstrument or not pInstrument.InstrumentID:
             return
 
-        symbol = pInstrument.InstrumentID.decode()
-        exchange = pInstrument.ExchangeID.decode() if pInstrument.ExchangeID else ""
+        symbol = _to_str(pInstrument.InstrumentID)
+        exchange = _to_str(pInstrument.ExchangeID) if pInstrument.ExchangeID else ""
         product_class = PRODUCT_CTP2VT.get(
-            pInstrument.ProductClass.decode() if pInstrument.ProductClass else "1",
+            _to_str(pInstrument.ProductClass) if pInstrument.ProductClass else "1",
             ProductClass.FUTURES,
         )
 
@@ -629,7 +629,7 @@ class _TdSpi(tdapi.CThostFtdcTraderSpi if CTP_AVAILABLE else object):
             gateway_name=self.gw.gateway_name,
             symbol=symbol,
             exchange=EXCHANGE_CTP2VT.get(exchange, exchange),
-            name=pInstrument.InstrumentName.decode() if pInstrument.InstrumentName else symbol,
+            name=_to_str(pInstrument.InstrumentName) if pInstrument.InstrumentName else symbol,
             product_class=product_class,
             size=pInstrument.VolumeMultiple,
             pricetick=pInstrument.PriceTick,
@@ -651,8 +651,8 @@ class _TdSpi(tdapi.CThostFtdcTraderSpi if CTP_AVAILABLE else object):
         if not pOrder or not pOrder.InstrumentID:
             return
 
-        order_ref = pOrder.OrderRef.decode() if pOrder.OrderRef else ""
-        symbol = pOrder.InstrumentID.decode()
+        order_ref = _to_str(pOrder.OrderRef) if pOrder.OrderRef else ""
+        symbol = _to_str(pOrder.InstrumentID)
 
         # Determine orderid
         front_id = pOrder.FrontID
@@ -660,27 +660,27 @@ class _TdSpi(tdapi.CThostFtdcTraderSpi if CTP_AVAILABLE else object):
         orderid = f"{front_id}_{session_id}_{order_ref}"
 
         status = STATUS_CTP2VT.get(
-            pOrder.OrderStatus.decode() if pOrder.OrderStatus else "z",
+            _to_str(pOrder.OrderStatus) if pOrder.OrderStatus else "z",
             Status.NOTTRADED,
         )
 
         # Check for rejected insert
-        order_status_str = pOrder.OrderStatus.decode() if pOrder.OrderStatus else ""
-        submit_status = getattr(pOrder, "OrderSubmitStatus", b"")
-        submit_status_str = submit_status.decode() if submit_status else ""
+        order_status_str = _to_str(pOrder.OrderStatus) if pOrder.OrderStatus else ""
+        submit_status = getattr(pOrder, "OrderSubmitStatus", "")
+        submit_status_str = _to_str(submit_status) if submit_status else ""
         if order_status_str == "3" and submit_status_str == "4":
             status = Status.REJECTED
 
         order_type = ORDERTYPE_CTP2VT.get(
-            pOrder.OrderPriceType.decode() if pOrder.OrderPriceType else "2",
+            _to_str(pOrder.OrderPriceType) if pOrder.OrderPriceType else "2",
             OrderType.LIMIT,
         )
 
         direction = DIRECTION_CTP2VT.get(
-            pOrder.Direction.decode() if pOrder.Direction else "",
+            _to_str(pOrder.Direction) if pOrder.Direction else "",
         )
         offset = OFFSET_CTP2VT.get(
-            pOrder.CombOffsetFlag.decode() if pOrder.CombOffsetFlag else "",
+            _to_str(pOrder.CombOffsetFlag) if pOrder.CombOffsetFlag else "",
         )
 
         order = self._orders.get(order_ref)
@@ -690,7 +690,7 @@ class _TdSpi(tdapi.CThostFtdcTraderSpi if CTP_AVAILABLE else object):
                 orderid=orderid,
                 symbol=symbol,
                 exchange=EXCHANGE_CTP2VT.get(
-                    pOrder.ExchangeID.decode() if pOrder.ExchangeID else "", "",
+                    _to_str(pOrder.ExchangeID) if pOrder.ExchangeID else "", "",
                 ),
                 type=order_type,
                 direction=direction,
@@ -716,7 +716,7 @@ class _TdSpi(tdapi.CThostFtdcTraderSpi if CTP_AVAILABLE else object):
         if pRspInfo and pRspInfo.ErrorID != 0:
             self.gw.on_log(
                 f"CTP order insert failed: [{pRspInfo.ErrorID}] "
-                f"{pRspInfo.ErrorMsg.decode('gbk')}"
+                f"{_to_str(pRspInfo.ErrorMsg)}"
             )
 
     # =========================================================================
@@ -727,22 +727,22 @@ class _TdSpi(tdapi.CThostFtdcTraderSpi if CTP_AVAILABLE else object):
         if not pTrade or not pTrade.InstrumentID:
             return
 
-        order_ref = pTrade.OrderRef.decode() if pTrade.OrderRef else ""
+        order_ref = _to_str(pTrade.OrderRef) if pTrade.OrderRef else ""
         orderid = f"{pTrade.FrontID}_{pTrade.SessionID}_{order_ref}"
 
         trade = TradeData(
             gateway_name=self.gw.gateway_name,
-            tradeid=pTrade.TradeID.decode() if pTrade.TradeID else "",
+            tradeid=_to_str(pTrade.TradeID) if pTrade.TradeID else "",
             orderid=orderid,
-            symbol=pTrade.InstrumentID.decode(),
+            symbol=_to_str(pTrade.InstrumentID),
             exchange=EXCHANGE_CTP2VT.get(
-                pTrade.ExchangeID.decode() if pTrade.ExchangeID else "", "",
+                _to_str(pTrade.ExchangeID) if pTrade.ExchangeID else "", "",
             ),
             direction=DIRECTION_CTP2VT.get(
-                pTrade.Direction.decode() if pTrade.Direction else "",
+                _to_str(pTrade.Direction) if pTrade.Direction else "",
             ),
             offset=OFFSET_CTP2VT.get(
-                pTrade.OffsetFlag.decode() if pTrade.OffsetFlag else "",
+                _to_str(pTrade.OffsetFlag) if pTrade.OffsetFlag else "",
             ),
             price=pTrade.Price,
             volume=pTrade.Volume,
@@ -764,7 +764,7 @@ class _TdSpi(tdapi.CThostFtdcTraderSpi if CTP_AVAILABLE else object):
 
         account = AccountData(
             gateway_name=self.gw.gateway_name,
-            accountid=pTradingAccount.AccountID.decode(),
+            accountid=_to_str(pTradingAccount.AccountID),
             balance=pTradingAccount.Balance,
             available=pTradingAccount.Available,
             frozen=(
@@ -793,9 +793,9 @@ class _TdSpi(tdapi.CThostFtdcTraderSpi if CTP_AVAILABLE else object):
         if not pInvestorPosition or not pInvestorPosition.InstrumentID:
             return
 
-        symbol = pInvestorPosition.InstrumentID.decode()
+        symbol = _to_str(pInvestorPosition.InstrumentID)
         posi_direction = (
-            pInvestorPosition.PosiDirection.decode()
+            _to_str(pInvestorPosition.PosiDirection)
             if pInvestorPosition.PosiDirection
             else ""
         )
@@ -811,7 +811,7 @@ class _TdSpi(tdapi.CThostFtdcTraderSpi if CTP_AVAILABLE else object):
                 gateway_name=self.gw.gateway_name,
                 symbol=symbol,
                 exchange=EXCHANGE_CTP2VT.get(
-                    pInvestorPosition.ExchangeID.decode()
+                    _to_str(pInvestorPosition.ExchangeID)
                     if pInvestorPosition.ExchangeID
                     else "",
                     "",
@@ -869,20 +869,38 @@ class _TdSpi(tdapi.CThostFtdcTraderSpi if CTP_AVAILABLE else object):
         if pRspInfo and pRspInfo.ErrorID != 0:
             self.gw.on_log(
                 f"CTP cancel failed: [{pRspInfo.ErrorID}] "
-                f"{pRspInfo.ErrorMsg.decode('gbk')}"
+                f"{_to_str(pRspInfo.ErrorMsg)}"
             )
 
     def OnRspError(self, pRspInfo, nRequestID: int, bIsLast: bool) -> None:
         if pRspInfo and pRspInfo.ErrorID != 0:
             self.gw.on_log(
                 f"CTP td error: [{pRspInfo.ErrorID}] "
-                f"{pRspInfo.ErrorMsg.decode('gbk')}"
+                f"{_to_str(pRspInfo.ErrorMsg)}"
             )
 
 
 # =========================================================================
 # Utility functions
 # =========================================================================
+
+
+def _to_str(value: Any) -> str:
+    """Normalize a CTP char* field to str.
+
+    openctp-ctp exposes char* fields as Python str; older builds and some
+    counter libraries return bytes instead. CTP error text is GBK encoded.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        for encoding in ("gbk", "utf-8"):
+            try:
+                return value.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return value.decode("gbk", errors="replace")
+    return str(value)
 
 
 def _parse_ctp_datetime(
@@ -892,8 +910,8 @@ def _parse_ctp_datetime(
 
     CTP format: ActionDay/TradeDate = "20240628", UpdateTime = "14:30:05"
     """
-    d = date_str.decode().strip() if isinstance(date_str, bytes) else str(date_str)
-    t = time_str.decode().strip() if isinstance(time_str, bytes) else str(time_str)
+    d = _to_str(date_str).strip() if isinstance(date_str, bytes) else str(date_str)
+    t = _to_str(time_str).strip() if isinstance(time_str, bytes) else str(time_str)
     if not d or not t:
         return None
     try:
