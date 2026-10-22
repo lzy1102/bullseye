@@ -30,9 +30,10 @@ A quantitative trading framework compatible with [Freqtrade](https://github.com/
     semantics; same-bar close fills remain the default
   - BaoStock daily files additionally persist liquidity/valuation factor columns
     (`turn`, `peTTM`, `pbMRQ`, `psTTM`, `pcfNcfTTM`, `isST`) for factor research
-  - Chinese futures daily backtests: margin-based sizing in whole lots, per-lot
-    fees (open / close / close-today), contract multiplier, tick-grid fills and
-    settlement-price price limits (specs in `user_data/data/futures/contracts.json`,
+  - Chinese futures daily backtests: Freqtrade-style sizing (stake x leverage =
+    notional, only the exchange margin is locked), per-lot fees (open / close /
+    close-today), contract multiplier, tick-grid fills and settlement-price
+    price limits (specs in `user_data/data/futures/contracts.json`,
     see the "期货线" section in [docs/strategies.md](docs/strategies.md))
 - **Market-Structure Library** (`user_data/strategies/chan_structure.py`) - Chan-theory
   fractals/strokes/pivots/divergence, lookahead-locked by tests; measured to add no

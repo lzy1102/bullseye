@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from bullseye.exceptions import ConfigurationError
+
 
 class Config:
     """
@@ -283,6 +285,48 @@ class Config:
     def exchange_name(self) -> str:
         """Exchange name."""
         return self.exchange.get("name", "binance")
+
+    @property
+    def trading_mode(self) -> str:
+        """Trading mode: 'auto' | 'spot' | 'futures' | 'margin'.
+
+        Freqtrade ships 'spot' / 'margin' / 'futures'. Bullseye adds 'auto'
+        (the default) because one deployment can trade A-shares, crypto and
+        futures at the same time: the market is then derived per pair from
+        its symbol format. 'futures'/'margin' force the futures path (margin
+        accounting, contract multiplier, per-lot fees); 'spot' never uses it
+        and forbids shorting, like Freqtrade.
+        """
+        mode = str(self._config.get("trading_mode", "auto") or "auto").lower()
+        if mode not in ("auto", "spot", "futures", "margin"):
+            raise ConfigurationError(
+                f"trading_mode must be auto, spot, futures or margin, got {mode!r}"
+            )
+        return mode
+
+    @property
+    def margin_mode(self) -> str:
+        """Margin mode for futures: 'isolated' (default) or 'cross'.
+
+        Only 'isolated' is modelled so far: margin is locked per position.
+        'cross' shares one margin pool across the book, which needs the
+        portfolio risk model that is not implemented yet.
+        """
+        mode = str(self._config.get("margin_mode", "isolated") or "isolated").lower()
+        if mode not in ("isolated", "cross"):
+            raise ConfigurationError(
+                f"margin_mode must be isolated or cross, got {mode!r}"
+            )
+        return mode
+
+    @property
+    def allows_short(self) -> bool:
+        """Whether shorting is permitted in the configured trading mode.
+
+        Freqtrade only allows shorts in 'margin'/'futures' mode. Bullseye's
+        'auto' mode keeps the per-strategy `can_short` behaviour.
+        """
+        return self.trading_mode not in ("spot",)
 
     @property
     def pairlist(self) -> List[Dict[str, Any]]:

@@ -136,6 +136,10 @@ class LocalTrade:
     # Margin locked for this position (futures). Stocks lock the full
     # notional instead, so this stays 0.0 there.
     margin_used: float = 0.0
+    # Leverage the position was *sized* with. For futures the notional
+    # already carries it (notional = stake * sizing_leverage), so the PnL
+    # math keeps `leverage` at 1.0 and uses this field for reporting.
+    sizing_leverage: float = 1.0
 
     # ==================== Orders ====================
     orders: List[Dict[str, Any]] = field(default_factory=list)

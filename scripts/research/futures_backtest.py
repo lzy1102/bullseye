@@ -77,6 +77,8 @@ def main():
     parser.add_argument("--max-trades", type=int, default=3)
     parser.add_argument("--timerange", default="20230101-20261010")
     parser.add_argument("--strategy", default="")
+    parser.add_argument("--trades", type=int, default=5,
+                        help="how many recent trades to print")
     parser.add_argument("--data-dir", default=str(DATA_DIR))
     args = parser.parse_args()
 
@@ -134,8 +136,8 @@ def main():
             print("  %-22s %.2f" % ("avg_win", sum(t.profit_abs for t in wins) / len(wins)))
         if losses:
             print("  %-22s %.2f" % ("avg_loss", sum(t.profit_abs for t in losses) / len(losses)))
-        print("--- last 5 trades ---")
-        for t in result.trades[-5:]:
+        print("--- last %d trades ---" % min(args.trades, len(result.trades)))
+        for t in result.trades[-args.trades:]:
             print("  %s %s->%s lots=%.0f stake=%.0f fee=%.2f pnl=%.2f (%.2f%%) %s" % (
                 t.pair, t.entry_date.date(), t.exit_date.date(), t.amount,
                 t.stake_amount, t.fee_open + t.fee_close, t.profit_abs,

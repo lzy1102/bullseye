@@ -18,6 +18,20 @@ stake_amount: 100
 # Ratio of total balance available for trading (0.0 - 1.0)
 tradable_balance_ratio: 0.99
 
+# Trading mode: auto | spot | futures | margin
+#   auto   - detect per pair from its symbol (one config can hold A-shares,
+#            crypto and futures at once)
+#   spot   - no margin, no shorting (Freqtrade semantics)
+#   futures/ margin - force the futures path: margin accounting, contract
+#            multiplier, per-lot fees; leverage comes from the strategy's
+#            leverage() callback (default 1x notional, the broker cap
+#            1 / margin rate is passed as max_leverage)
+trading_mode: auto
+
+# Margin mode for futures: isolated (per position) | cross (shared pool).
+# Only isolated is modelled so far.
+margin_mode: isolated
+
 # Currency for display purposes
 fiat_display_currency: USD
 

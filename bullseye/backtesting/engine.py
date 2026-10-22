@@ -9,6 +9,7 @@ Compatible with Freqtrade IStrategy v3 interface.
 """
 import importlib
 import logging
+import math
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -210,7 +211,7 @@ class BacktestEngine:
         fees, tick size) that stocks do not have. Specs come from
         ``user_data/data/futures/contracts.json``.
         """
-        if self._detect_market_type(pair) != MarketType.FUTURE:
+        if self._market_type(pair) != MarketType.FUTURE:
             return None
         if self._contract_registry is None:
             from bullseye.order.future_rules import ContractRegistry
@@ -301,7 +302,7 @@ class BacktestEngine:
         Explicit mismatches raise; legacy files without a sidecar only warn.
         Crypto pairs are never checked.
         """
-        if self._detect_market_type(pair) != MarketType.STOCK:
+        if self._market_type(pair) != MarketType.STOCK:
             return
         declared = self._normalize_adjust(self._config.get("stock.adjust", "qfq"))
         meta_path = self._find_data_file(f"{pair.replace('/', '_')}-{timeframe}.meta.json")
@@ -354,7 +355,7 @@ class BacktestEngine:
 
     def _load_dividends(self, pair: str) -> List[tuple]:
         """Load a pair's dividend calendar from its sidecar JSON file."""
-        if self._detect_market_type(pair) != MarketType.STOCK:
+        if self._market_type(pair) != MarketType.STOCK:
             return []
         div_path = self._find_data_file(f"{pair.replace('/', '_')}.dividends.json")
         if div_path is None:
@@ -376,7 +377,7 @@ class BacktestEngine:
         (qfq/hfq) and files without a sidecar (declared `stock.adjust`
         defaults to qfq) keep dividends embedded in the price series.
         """
-        if self._detect_market_type(pair) != MarketType.STOCK:
+        if self._market_type(pair) != MarketType.STOCK:
             return False
         declared = self._normalize_adjust(self._config.get("stock.adjust", "qfq"))
         meta_path = self._find_data_file(
@@ -1487,6 +1488,41 @@ class BacktestEngine:
         mapping = {"stock": MarketType.STOCK, "future": MarketType.FUTURE}
         return mapping.get(_detect(pair), MarketType.CRYPTO)
 
+    def _trading_mode(self) -> str:
+        """Configured trading mode ('auto' | 'spot' | 'futures' | 'margin')."""
+        try:
+            return self._config.trading_mode
+        except Exception:
+            return "auto"
+
+    def _allows_short(self) -> bool:
+        """Whether shorting is allowed in the configured trading mode.
+
+        Freqtrade only allows shorts in 'margin'/'futures' mode; spot means
+        no leverage and no shorting. 'auto' keeps the per-strategy
+        `can_short` behaviour.
+        """
+        try:
+            return bool(self._config.allows_short)
+        except Exception:
+            return True
+
+    def _market_type(self, pair: str) -> "MarketType":
+        """Market type of a pair, honouring the configured trading mode.
+
+        'auto' (default) infers it from the symbol format, so one config can
+        hold A-shares, crypto and futures. 'futures'/'margin' force the
+        futures path; 'spot' refuses it (like Freqtrade, where spot means
+        no margin and no shorting).
+        """
+        mode = self._trading_mode()
+        if mode in ("futures", "margin"):
+            return MarketType.FUTURE
+        detected = self._detect_market_type(pair)
+        if mode == "spot" and detected == MarketType.FUTURE:
+            return MarketType.CRYPTO
+        return detected
+
     # ==================== A-share trading rules ====================
 
     def _enforce_lot_size(self) -> bool:
@@ -1533,7 +1569,7 @@ class BacktestEngine:
             if is_entry:
                 return current_rate >= limit_up * 0.999
             return current_rate <= limit_down * 1.001
-        if self._detect_market_type(pair) != MarketType.STOCK:
+        if self._market_type(pair) != MarketType.STOCK:
             return False
         if is_entry:
             return self._locked_at_limit_up(
@@ -1626,7 +1662,18 @@ class BacktestEngine:
         self, strategy: IStrategy, pair: str, current_rate: float,
         current_date: datetime, entry_tag: Optional[str], side: str,
     ) -> float:
-        """Resolve leverage via `strategy.leverage()` (default 1.0)."""
+        """Resolve leverage via `strategy.leverage()` (Freqtrade semantics).
+
+        The proposed leverage stays 1.0 so a strategy that does not implement
+        the callback gets 1x notional - the same exposure it would have on
+        stocks. For futures the broker's cap (1 / margin rate) is passed as
+        ``max_leverage`` so a futures-native strategy can ask for the full
+        allowance explicitly.
+        """
+        max_leverage = 10.0
+        spec = self._futures_contract(pair)
+        if spec is not None:
+            max_leverage = spec.leverage_from_margin
         try:
             lev = self._safe_callback(
                 f"leverage[{side}]({pair})",
@@ -1635,7 +1682,7 @@ class BacktestEngine:
                     current_time=current_date,
                     current_rate=current_rate,
                     proposed_leverage=1.0,
-                    max_leverage=10,
+                    max_leverage=max_leverage,
                     entry_tag=entry_tag,
                     side=side,
                 ),
@@ -1644,7 +1691,8 @@ class BacktestEngine:
             lev_f = float(lev or 1.0)
             if lev_f <= 0 or lev_f != lev_f:  # NaN guard
                 return 1.0
-            return lev_f
+            # Freqtrade clamps into [1, max_leverage].
+            return min(max(lev_f, 1.0), max_leverage)
         except Exception:
             return 1.0
 
@@ -1681,36 +1729,40 @@ class BacktestEngine:
         wallets: Wallets, open_trades: Dict[str, LocalTrade],
         leverage: float,
     ) -> Optional[LocalTrade]:
-        market_type = self._detect_market_type(pair)
+        market_type = self._market_type(pair)
         spec = self._futures_contract(pair)
         margin_used = 0.0
         contract_size = 1.0
+        sizing_leverage = leverage
         if spec is not None:
-            # Futures: the stake is a *margin* budget. Convert it into whole
-            # lots at the fill price, then derive notional and margin.
-            amount = spec.contracts_for_margin(actual_stake, fill_rate)
+            # Futures (Freqtrade semantics): the stake is the capital the
+            # strategy commits, the leverage turns it into a notional, and
+            # only the exchange's margin requirement is locked as cash.
+            #   notional = stake * leverage
+            #   lots     = notional / (price * contract multiplier)
+            #   margin   = notional * margin rate
+            # leverage defaults to 1.0, so a stock strategy keeps the same
+            # exposure it has on stocks; a futures-native strategy asks the
+            # engine for the broker cap (max_leverage = 1 / margin rate).
+            fill_rate = spec.round_to_tick(fill_rate)
+            per_lot = fill_rate * spec.multiplier
+            if per_lot <= 0:
+                return None
+            notional_budget = actual_stake * leverage
+            amount = math.floor(notional_budget / per_lot)
             if amount < 1:
                 logger.debug(
-                    f"Entry skipped for {pair}: margin budget {actual_stake:.2f} "
-                    f"buys no lot at {fill_rate} (margin rate {spec.margin_rate})"
+                    f"Entry skipped for {pair}: stake {actual_stake:.2f} at "
+                    f"leverage {leverage:g} buys no lot at {fill_rate}"
                 )
                 return None
-            fill_rate = spec.round_to_tick(fill_rate)
-            amount = spec.contracts_for_margin(actual_stake, fill_rate)
-            if amount < 1:
-                return None
-            actual_stake = spec.notional(fill_rate, amount)
+            actual_stake = amount * per_lot
             margin_used = spec.margin(fill_rate, amount, is_short=is_short)
             contract_size = spec.multiplier
             fee = spec.fee(fill_rate, amount, "open")
-            if leverage != 1.0:
-                # Futures leverage is the margin rate itself; scaling the PnL
-                # by a strategy leverage as well would count it twice.
-                logger.debug(
-                    f"{pair}: ignoring strategy leverage {leverage} - futures "
-                    f"leverage comes from the {spec.margin_rate:.0%} margin rate"
-                )
-                leverage = 1.0
+            # The notional already carries the leverage, so the PnL must not
+            # be scaled again.
+            leverage = 1.0
         else:
             amount = actual_stake / fill_rate if fill_rate > 0 else 0
             if amount <= 0:
@@ -1748,6 +1800,7 @@ class BacktestEngine:
             leverage=leverage,
             contract_size=contract_size,
             margin_used=margin_used,
+            sizing_leverage=sizing_leverage,
         )
         stoploss = getattr(strategy, 'stoploss', 0)
         if stoploss != 0:
@@ -1866,7 +1919,7 @@ class BacktestEngine:
                 return
 
             # Check for short entry
-            if getattr(strategy, 'can_short', False):
+            if getattr(strategy, 'can_short', False) and self._allows_short():
                 enter_short = signal_row.get("enter_short", 0)
                 if enter_short == 1:
                     confirmed = self._safe_callback(
@@ -1989,13 +2042,18 @@ class BacktestEngine:
         add = min(add, available)
         spec = self._futures_contract(trade.pair)
         if spec is not None:
-            # Futures: the add stake is a margin budget -> whole lots.
+            # Futures: the add stake is capital, the leverage turns it into
+            # a notional, and only the margin requirement is locked.
             fill = spec.round_to_tick(fill)
-            amount = spec.contracts_for_margin(add, fill)
+            per_lot = fill * spec.multiplier
+            lev = trade.sizing_leverage or 1.0
+            if per_lot <= 0:
+                return
+            amount = math.floor((add * lev) / per_lot)
             if amount < 1:
                 logger.debug(f"Adjust skipped for {trade.pair}: no lot fits")
                 return
-            add = spec.notional(fill, amount)
+            add = amount * per_lot
             fee = spec.fee(fill, amount, "open")
             margin_add = spec.margin(fill, amount)
         else:

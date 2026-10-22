@@ -83,6 +83,19 @@ class FutureContract:
             return 0.0
         return math.floor(margin_budget / per_contract)
 
+    @property
+    def leverage_from_margin(self) -> float:
+        """The broker's leverage cap: 1 / margin rate.
+
+        This is the most exposure the contract allows with the margin the
+        exchange demands. Strategies may ask for it explicitly (Freqtrade
+        passes it as ``max_leverage``); the default stays 1x notional.
+        """
+        rate = float(self.margin_rate or 0.0)
+        if rate <= 0:
+            return 1.0
+        return 1.0 / rate
+
     # ------------------------------------------------------------------
     # fees
     # ------------------------------------------------------------------
@@ -156,8 +169,38 @@ class ContractRegistry:
         return pair in self._contracts
 
     def get(self, pair: str) -> Optional[FutureContract]:
-        """Contract spec for ``pair`` (None when unknown)."""
-        return self._contracts.get(pair)
+        """Contract spec for ``pair`` (None when unknown).
+
+        Exact match first ("RB0@SHFE"), then a product-level fallback so a
+        real contract code ("rb2601", "rb2601@SHFE") resolves to the spec of
+        its product ("RB0@SHFE").
+        """
+        spec = self._contracts.get(pair)
+        if spec is not None:
+            return spec
+        return self._by_product(pair)
+
+    def _by_product(self, pair: str) -> Optional[FutureContract]:
+        """Resolve a contract code to the spec of its product."""
+        if not pair:
+            return None
+        symbol = pair.split("@", 1)[0].strip()
+        product = "".join(ch for ch in symbol if ch.isalpha()).upper()
+        if not product:
+            return None
+        exchange = pair.split("@", 1)[1].strip().upper() if "@" in pair else None
+        candidates = [
+            c for c in self._contracts.values()
+            if c.product.upper() == product
+            and (not exchange or c.exchange.upper() == exchange)
+        ]
+        if not candidates:
+            return None
+        # Prefer the main-continuous entry of that product.
+        for candidate in candidates:
+            if candidate.symbol.upper().endswith("0"):
+                return candidate
+        return candidates[0]
 
     def pairs(self):
         return list(self._contracts.keys())
