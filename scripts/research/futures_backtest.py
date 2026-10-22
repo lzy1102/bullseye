@@ -127,9 +127,11 @@ def main():
             print("  %-22s %s" % (name, getattr(metrics, name)))
     if result.trades:
         fees = sum(t.fee_open + t.fee_close for t in result.trades)
+        roll_costs = sum(getattr(t, "roll_cost", 0.0) for t in result.trades)
         wins = [t for t in result.trades if t.profit_abs > 0]
         losses = [t for t in result.trades if t.profit_abs < 0]
         print("  %-22s %.2f" % ("total_fees", fees))
+        print("  %-22s %.2f" % ("total_roll_cost", roll_costs))
         print("  %-22s %.2f" % ("avg_profit_per_trade",
                                  sum(t.profit_abs for t in result.trades) / len(result.trades)))
         if wins:

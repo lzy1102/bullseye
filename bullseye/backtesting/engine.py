@@ -8,6 +8,7 @@ on strategy signals.
 Compatible with Freqtrade IStrategy v3 interface.
 """
 import importlib
+import json
 import logging
 import math
 import sys
@@ -203,6 +204,8 @@ class BacktestEngine:
         # Futures contract specs (multiplier / margin / fees); loaded lazily
         # so stock and crypto backtests never touch the futures registry.
         self._contract_registry = None
+        # Roll dates per futures pair (sidecar JSON), loaded lazily too.
+        self._roll_date_cache: Dict[str, set] = {}
 
     def _futures_contract(self, pair: str) -> Optional["FutureContract"]:
         """Contract spec for a futures pair, or None for stocks/crypto.
@@ -224,6 +227,50 @@ class BacktestEngine:
         if spec is None:
             return price
         return spec.round_to_tick(price)
+
+    def _roll_dates(self, pair: str) -> set:
+        """Dates on which the pair's dominant contract rolls.
+
+        Written by scripts/research/futures_continuous.py as
+        ``{pair}-rolls.json`` next to the parquet file.
+        """
+        cached = self._roll_date_cache.get(pair)
+        if cached is not None:
+            return cached
+        dates = set()
+        filename = f"{pair.replace('/', '_')}-rolls.json"
+        path = self._find_data_file(filename)
+        if path is not None:
+            try:
+                payload = json.loads(Path(path).read_text(encoding="utf-8"))
+                for roll in payload.get("rolls", []):
+                    try:
+                        dates.add(datetime.fromisoformat(roll["date"]).date())
+                    except (KeyError, TypeError, ValueError):
+                        continue
+            except (OSError, ValueError) as exc:
+                logger.warning(f"Cannot read roll sidecar for {pair}: {exc}")
+        self._roll_date_cache[pair] = dates
+        return dates
+
+    def _charge_roll_cost(self, trade: LocalTrade, price: float) -> None:
+        """Charge one contract roll: close the old leg and open the new one.
+
+        The back-adjusted series already removes the price gap, so the only
+        cost is two legs' commissions plus the slippage of both fills.
+        """
+        spec = self._futures_contract(trade.pair)
+        if spec is None:
+            return
+        fee_close = spec.fee(price, trade.amount, "close", close_today=False)
+        fee_open = spec.fee(price, trade.amount, "open")
+        slippage = 2 * self._slippage_rate * spec.notional(price, trade.amount)
+        cost = fee_close + fee_open + slippage
+        trade.roll_cost += cost
+        logger.debug(
+            f"Roll: {trade.pair} {trade.amount:.0f} lots @ {price}, "
+            f"cost={cost:.2f} (fees {fee_close + fee_open:.2f} + slip {slippage:.2f})"
+        )
 
     def _calc_fee(self, value: float, is_sell: bool) -> float:
         """Transaction fee: structured model when configured, else flat rate."""
@@ -1345,6 +1392,18 @@ class BacktestEngine:
                         closed_bt_trades=closed_bt_trades,
                     )
 
+                # === Roll cost (futures) ===
+                # The continuous series is back-adjusted, so a roll costs only
+                # the two legs' fees plus slippage: close the old contract and
+                # open the same lots in the new one. A position opened earlier
+                # today is not charged (the entry block below runs later).
+                rolled_trade = open_trades.get(pair)
+                if (
+                    rolled_trade is not None
+                    and current_date.date() in self._roll_dates(pair)
+                ):
+                    self._charge_roll_cost(rolled_trade, current_rate)
+
                 # === Check entries ===
                 if (
                     pair not in open_trades
@@ -1394,7 +1453,7 @@ class BacktestEngine:
                     # the account, so add it back before the unrealized PnL.
                     equity += (
                         trade.margin_used + gross_pnl
-                        - trade.fee_open - est_close_fee
+                        - trade.fee_open - est_close_fee - trade.roll_cost
                     )
                 else:
                     est_close_fee = self._calc_fee(
@@ -2570,6 +2629,7 @@ class BacktestEngine:
             stake_amount=trade.stake_amount,
             fee_open=trade.fee_open,
             fee_close=fee_close,
+            roll_cost=trade.roll_cost,
             profit=profit_pct / 100,
             profit_pct=profit_pct,
             profit_abs=profit_abs,

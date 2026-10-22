@@ -156,8 +156,17 @@ class TestFuturesBacktest:
         }}}), encoding="utf-8")
         return path
 
-    def _config(self, tmp_path, stake=100000.0, trading_mode="auto"):
+    def _config(self, tmp_path, stake=100000.0, trading_mode="auto",
+                datadir=None, roll_dates=None):
         path = self._contracts_file(tmp_path)
+        if roll_dates is not None:
+            data_dir = datadir or (tmp_path / "data")
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / ("%s-rolls.json" % PAIR)).write_text(json.dumps({
+                "pair": PAIR,
+                "rolls": [{"date": d, "from": "RB2401", "to": "RB2405",
+                           "spread": 10.0} for d in roll_dates],
+            }), encoding="utf-8")
         config = Config()
         config.set("stake_currency", "CNY")
         config.set("stake_amount", stake)
@@ -167,9 +176,13 @@ class TestFuturesBacktest:
         config.set("fee", 0.0)
         config.set("trading_mode", trading_mode)
         config.set("futures.contracts_file", str(path))
+        if datadir is not None:
+            config.set("datadir", str(datadir))
+        elif roll_dates is not None:
+            config.set("datadir", str(tmp_path / "data"))
         return config
 
-    def _strategy(self, leverage_cb=None):
+    def _strategy(self, leverage_cb=None, exit_index=2):
         class OneShotStrategy(IStrategy):
             timeframe = "1d"
             startup_candle_count = 1
@@ -184,7 +197,7 @@ class TestFuturesBacktest:
                 return dataframe
 
             def populate_exit_trend(self, dataframe, metadata):
-                dataframe.loc[2, "exit_long"] = 1
+                dataframe.loc[exit_index, "exit_long"] = 1
                 return dataframe
 
         if leverage_cb is not None:
@@ -194,13 +207,14 @@ class TestFuturesBacktest:
         return OneShotStrategy
 
     def _run(self, tmp_path, closes, stake=100000.0, leverage_cb=None,
-             trading_mode="auto", pair=PAIR):
-        config = self._config(tmp_path, stake=stake, trading_mode=trading_mode)
+             trading_mode="auto", pair=PAIR, roll_dates=None, exit_index=2):
+        config = self._config(tmp_path, stake=stake, trading_mode=trading_mode,
+                              roll_dates=roll_dates)
         engine = BacktestEngine(config)
         data = {pair: self._frames(closes)}
         return engine.run(
-            strategy_class=self._strategy(leverage_cb), pairlist=[pair],
-            timeframe="1d", data=data,
+            strategy_class=self._strategy(leverage_cb, exit_index=exit_index),
+            pairlist=[pair], timeframe="1d", data=data,
         )
 
     def test_default_leverage_is_1x_notional(self, tmp_path):
@@ -248,6 +262,21 @@ class TestFuturesBacktest:
         result = self._run(tmp_path, closes, stake=100000.0,
                            trading_mode="futures", pair="RB2601")
         assert result.trades[0].amount == 3
+
+    def test_roll_charges_two_legs_of_fees(self, tmp_path):
+        """A position held across a roll pays close + open fees on that date."""
+        closes = [3000.0, 3000.0, 3000.0, 3060.0, 3060.0]
+        data_dates = list(pd.date_range("2024-01-02", periods=len(closes),
+                                        freq="D").date)
+        roll_day = str(data_dates[2])
+        # exit on the last bar so the position is still open on the roll day
+        result = self._run(tmp_path, closes, stake=100000.0,
+                           roll_dates=[roll_day], exit_index=3)
+        trade = result.trades[0]
+        # 3 lots at 3000: close fee 3*0.0001*30000 = 9.0, open fee 9.0
+        assert trade.roll_cost == pytest.approx(18.0)
+        # and it is deducted from the PnL like a fee
+        assert trade.profit_abs == pytest.approx(1800.0 - 9.0 - 9.18 - 18.0)
 
     def test_daily_bars_never_pay_close_today_fee(self, tmp_path):
         """The engine exits before it enters within a bar, so a daily-bar

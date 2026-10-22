@@ -140,6 +140,9 @@ class LocalTrade:
     # already carries it (notional = stake * sizing_leverage), so the PnL
     # math keeps `leverage` at 1.0 and uses this field for reporting.
     sizing_leverage: float = 1.0
+    # Accumulated contract-roll cost (futures): each roll pays two legs'
+    # commissions plus slippage. Subtracted from the PnL like a fee.
+    roll_cost: float = 0.0
 
     # ==================== Orders ====================
     orders: List[Dict[str, Any]] = field(default_factory=list)
@@ -347,6 +350,9 @@ class LocalTrade:
         profit -= self.fee_open
         if self.close_rate is not None:
             profit -= self.fee_close
+
+        # Contract rolls (futures) are realised costs, not fees
+        profit -= self.roll_cost
 
         # Add realized profit from partial closes
         profit += self.realized_profit

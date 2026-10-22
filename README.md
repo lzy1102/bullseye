@@ -33,8 +33,9 @@ A quantitative trading framework compatible with [Freqtrade](https://github.com/
   - Chinese futures daily backtests: Freqtrade-style sizing (stake x leverage =
     notional, only the exchange margin is locked), per-lot fees (open / close /
     close-today), contract multiplier, tick-grid fills and settlement-price
-    price limits (specs in `user_data/data/futures/contracts.json`,
-    see the "期货线" section in [docs/strategies.md](docs/strategies.md))
+    price limits, roll-adjusted continuous series with contract-roll costs
+    (specs in `user_data/data/futures/contracts.json`, see the "期货线"
+    section in [docs/strategies.md](docs/strategies.md))
 - **Market-Structure Library** (`user_data/strategies/chan_structure.py`) - Chan-theory
   fractals/strokes/pivots/divergence, lookahead-locked by tests; measured to add no
   edge on top of the candle×indicator setups, so it ships as a charting aid only

@@ -21,6 +21,7 @@ class BacktestTrade:
     stake_amount: float = 0.0
     fee_open: float = 0.0
     fee_close: float = 0.0
+    roll_cost: float = 0.0
     profit: float = 0.0
     profit_pct: float = 0.0
     profit_abs: float = 0.0
