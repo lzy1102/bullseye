@@ -30,7 +30,7 @@
   - Baostock日线额外落盘流动性/估值因子列（`turn`/`peTTM`/`pbMRQ`/`psTTM`/`pcfNcfTTM`/`isST`）
   - **期货日线回测**：Freqtrade 式仓位（stake × 杠杆 = 名义，只锁交易所保证金）、
     按手手续费（开/平/平今）、合约乘数、tick 网格成交、按上一结算价判涨跌停、
-    复权连续序列 + 移仓成本
+    复权连续序列 + 移仓成本、CTP 行情落库（`scripts/research/ctp_tape.py`）
     （规格见 `user_data/data/futures/contracts.json`，
     详见 [`docs/strategies.md`](docs/strategies.md) 的「期货线」一节）
 - **@informative 多周期**：回测与实盘一致执行，防未来函数合并

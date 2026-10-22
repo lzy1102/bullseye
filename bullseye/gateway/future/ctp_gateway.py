@@ -355,14 +355,16 @@ class CtpGateway(BaseGateway):
         """Subscribe to real-time market data."""
         self._subscribed_symbols = list(symbols)
         if self._md_api and self._md_spi and self._md_spi._login_success:
-            encoded = [s for s in symbols]
+            # The instrument array is the one place where openctp still wants
+            # bytes (its char** typemap), while every char* field takes str.
+            encoded = [s.encode() for s in symbols]
             self._md_api.SubscribeMarketData(encoded, len(encoded))
             self.on_log(f"Subscribed to {len(symbols)} symbols")
 
     def unsubscribe_quote(self, symbols: List[str]) -> None:
         """Unsubscribe from market data."""
         if self._md_api:
-            encoded = [s for s in symbols]
+            encoded = [s.encode() for s in symbols]
             self._md_api.UnSubscribeMarketData(encoded, len(encoded))
 
     # =====================================================================
@@ -434,7 +436,7 @@ class _MdSpi(mdapi.CThostFtdcMdSpi if CTP_AVAILABLE else object):
 
         # Re-subscribe previously cached symbols
         if self.gw._subscribed_symbols:
-            encoded = [s for s in self.gw._subscribed_symbols]
+            encoded = [s.encode() for s in self.gw._subscribed_symbols]
             self.api.SubscribeMarketData(encoded, len(encoded))
 
     def OnRspSubMarketData(

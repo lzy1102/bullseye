@@ -803,7 +803,26 @@ SimNow 前置（`182.254.243.31:30001/30011`）实测：握手成功 → 行情�
 顺带解决了一个悬案：**日线的日期就是交易日**（夜盘 21:00 归次日），所以日线不用额外处理；
 只有分钟线需要，而免费源拿不到分钟。
 
-### ⑦ 判决与未完成项
+### ⑦ 行情落库（CTP tick → 1 分钟 bar）
+
+免费源的分钟历史只有滚动 1023 根，**唯一能攒出期货分钟历史的方式是自己收**。
+`scripts/research/ctp_tape.py`：连 CTP 行情前置（SimNow 或期货公司实盘前置）→ 订阅每个
+品种的近月合约（当前月 + 后 5 个月，覆盖所有品种的主力）→ tick 聚合成 1 分钟 bar → 落
+`<out>/1m/{合约}-{交易日}.parquet`（按日分文件、每 30 秒刷一次，崩了最多丢最后一次刷盘）。
+
+要点：
+
+- **交易日直接用柜台的 `TradingDay`**：夜盘 21:00-02:30 自动归次日（实测 19:46 的 tick →
+  `trading_day=20261023` / `action_day=20261022`），不必自己算交易日历
+- tick 的 Volume 是**当日累计**，分钟量 = 与上一 tick 的差（首根 bar 从 0 起算）
+- 主机与容器时区是 **UTC**，bar 时间戳取自 CTP 的 `UpdateTime`（交易所时间），落盘不带时区
+- SimNow 行情前置**不校验密码**，所以没有账号也能跑通验证（实测：登录 `err=0`、订阅 18 个
+  合约、收到 tick 并落盘）
+- **openctp 的 SWIG 绑定类型不一致**：`char*` 字段赋值要 `str`，`char**` 合约数组要 `bytes`
+  （实测 `SubscribeMarketData` 传 str 报 `list must contain strings`）。这是上一轮
+  "全面 bytes→str" 修法漏掉的地方，只在连真柜台时暴露——已修并补了回归测试
+
+### ⑧ 判决与未完成项
 
 1. **日线期货：基础设施就绪**（含移仓），可跑可算。
 2. **期货日内/隔夜：不启动**。免费源分钟历史拿不到（滚动 1023 根），而期货平今手续费
@@ -822,6 +841,9 @@ python3 scripts/research/futures_continuous.py --out user_data/data/futures
 # 3. 回测（自动读 contracts.json 与 {pair}-rolls.json）
 python3 scripts/research/futures_backtest.py --pairs RB0@SHFE,IF0@CFFEX \
     --capital 1000000 --stake 200000
+# 4. 分钟数据落库（CTP 行情前置，SimNow 或实盘前置）
+python3 scripts/research/ctp_tape.py --products RB,IF,AU --user <id> --password <pw> \
+    --out user_data/data/futures_tape
 ```
 
 ## 超市战法实验矩阵（2026-10-14，封存）

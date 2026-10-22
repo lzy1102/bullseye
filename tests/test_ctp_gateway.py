@@ -46,11 +46,16 @@ class TestToStr:
 class TestSwigStringContract:
     """openctp char* fields are str; bytes break every call."""
 
-    def test_gateway_never_encodes_strings(self):
+    def test_char_fields_are_not_encoded(self):
+        # char* fields take str; only the char** instrument array takes bytes
+        # (covered in TestOpenctpTypemaps).
         source = inspect.getsource(ctp_gateway)
-        assert ".encode()" not in source, (
-            "CTP char* fields must be str for openctp-ctp; .encode() raises TypeError"
-        )
+        for line in source.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("req.", "field.")) and "=" in stripped:
+                assert ".encode()" not in stripped, (
+                    "CTP char* fields must be str: %s" % stripped
+                )
 
     def test_gateway_never_assigns_bytes_literals(self):
         source = inspect.getsource(ctp_gateway)
@@ -86,6 +91,30 @@ class TestSimNowAddresses:
         text = path.read_text(encoding="utf-8")
         assert "tcp://182.254.243.31:30001" in text
         assert "tcp://182.254.243.31:30011" in text
+
+
+class TestOpenctpTypemaps:
+    """openctp's SWIG bindings are inconsistent: char* fields take str, the
+    char** instrument array takes bytes. Getting this wrong only shows up
+    against a live counter ("list must contain strings")."""
+
+    def test_instrument_array_is_encoded(self):
+        source = inspect.getsource(ctp_gateway)
+        # every Subscribe/UnSubscribe call must encode its instrument list
+        for line in source.splitlines():
+            if "SubscribeMarketData(" in line or "UnSubscribeMarketData(" in line:
+                assert "encoded" in line or ".encode()" in line, (
+                    "instrument arrays must be bytes: %s" % line.strip()
+                )
+
+    def test_char_fields_stay_str(self):
+        source = inspect.getsource(ctp_gateway)
+        for line in source.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("req.", "field.")) and "=" in stripped:
+                assert ".encode()" not in stripped, (
+                    "char* fields must be str: %s" % stripped
+                )
 
 
 class TestDockerfileLocale:
