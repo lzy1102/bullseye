@@ -12,7 +12,7 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Type, TYPE_CHECKING
 
 import pandas as pd
 
@@ -41,6 +41,9 @@ from bullseye.strategy.interface import (
 from bullseye.wallets.wallets import Wallets
 
 from .result import BacktestResult, BacktestTrade
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from bullseye.order.future_rules import FutureContract
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +199,30 @@ class BacktestEngine:
         self._data_handler = self._create_data_handler()
         # Count of strategy-callback failures swallowed per run (visibility)
         self._callback_failures = 0
+        # Futures contract specs (multiplier / margin / fees); loaded lazily
+        # so stock and crypto backtests never touch the futures registry.
+        self._contract_registry = None
+
+    def _futures_contract(self, pair: str) -> Optional["FutureContract"]:
+        """Contract spec for a futures pair, or None for stocks/crypto.
+
+        Futures need per-contract facts (multiplier, margin rate, per-lot
+        fees, tick size) that stocks do not have. Specs come from
+        ``user_data/data/futures/contracts.json``.
+        """
+        if self._detect_market_type(pair) != MarketType.FUTURE:
+            return None
+        if self._contract_registry is None:
+            from bullseye.order.future_rules import ContractRegistry
+            self._contract_registry = ContractRegistry.from_config(self._config)
+        return self._contract_registry.get(pair)
+
+    def _round_to_tick(self, pair: str, price: float) -> float:
+        """Snap a fill price onto the contract's tick grid (futures only)."""
+        spec = self._futures_contract(pair)
+        if spec is None:
+            return price
+        return spec.round_to_tick(price)
 
     def _calc_fee(self, value: float, is_sell: bool) -> float:
         """Transaction fee: structured model when configured, else flat rate."""
@@ -1153,6 +1180,10 @@ class BacktestEngine:
                 col: df[col].to_numpy()
                 for col in ("date", "open", "high", "low", "close")
             }
+            # Futures carry the previous settlement price: it is the basis for
+            # the exchange price limit, not the previous bar close.
+            if "pre_settle" in df.columns:
+                price_arrays[pair]["pre_settle"] = df["pre_settle"].to_numpy()
             signal_arrays[pair] = {
                 col: s[col].to_numpy() for col in s.columns
             } if (s := precomputed_signals.get(pair)) is not None else {}
@@ -1273,6 +1304,16 @@ class BacktestEngine:
                 current_low = prices["low"][idx]
                 closes = prices["close"]
                 prev_close = closes[idx - 1] if idx > 0 else current_rate
+                # Limit basis: futures limit against the previous settlement
+                # price, stocks against the previous close.
+                if self._futures_contract(pair) is not None:
+                    settles = prices.get("pre_settle")
+                    if (
+                        settles is not None
+                        and idx < len(settles)
+                        and float(settles[idx]) > 0
+                    ):
+                        prev_close = float(settles[idx])
                 signal_row = _ArrayRow(signal_arrays[pair], idx)
                 pair_last_index[pair] = idx
 
@@ -1336,15 +1377,32 @@ class BacktestEngine:
                     continue
                 rate = price_arrays[trade.pair]["close"][last_idx]
                 leverage = trade.leverage or 1.0
+                size = trade.contract_size or 1.0
                 gross_pnl = (
-                    (rate - trade.open_rate) * trade.amount
+                    (rate - trade.open_rate) * trade.amount * size
                     if not trade.is_short
-                    else (trade.open_rate - rate) * trade.amount
+                    else (trade.open_rate - rate) * trade.amount * size
                 ) * leverage
-                est_close_fee = self._calc_fee(
-                    rate * trade.amount, is_sell=not trade.is_short
-                )
-                equity += trade.stake_amount + gross_pnl - trade.fee_open - est_close_fee
+                spec = self._futures_contract(trade.pair)
+                if spec is not None:
+                    est_close_fee = spec.fee(
+                        rate, trade.amount, "close",
+                        close_today=trade.open_date.date() == current_date.date(),
+                    )
+                    # Margin is deducted from free cash but still belongs to
+                    # the account, so add it back before the unrealized PnL.
+                    equity += (
+                        trade.margin_used + gross_pnl
+                        - trade.fee_open - est_close_fee
+                    )
+                else:
+                    est_close_fee = self._calc_fee(
+                        rate * trade.amount, is_sell=not trade.is_short
+                    )
+                    equity += (
+                        trade.stake_amount + gross_pnl
+                        - trade.fee_open - est_close_fee
+                    )
             equity_curve.append((current_date, equity))
 
         # Close any remaining open trades at the last price
@@ -1456,6 +1514,34 @@ class BacktestEngine:
         from bullseye.order.stock_rules import limit_ratio_for as _for
 
         return _for(self._config, pair)
+
+    def _limit_locked(self, pair: str, current_rate: float, basis: float,
+                      is_entry: bool) -> bool:
+        """True when the market is locked at its price limit (no fill).
+
+        Futures limit against the previous settlement price with the
+        exchange band of the contract; A-shares limit against the previous
+        close with the board band.
+        """
+        if not self._enforce_price_limits():
+            return False
+        spec = self._futures_contract(pair)
+        if spec is not None:
+            limit_up, limit_down = spec.limit_prices(basis)
+            if limit_up <= 0:
+                return False
+            if is_entry:
+                return current_rate >= limit_up * 0.999
+            return current_rate <= limit_down * 1.001
+        if self._detect_market_type(pair) != MarketType.STOCK:
+            return False
+        if is_entry:
+            return self._locked_at_limit_up(
+                current_rate, basis, self._limit_ratio_for(pair)
+            )
+        return self._locked_at_limit_down(
+            current_rate, basis, self._limit_ratio_for(pair)
+        )
 
     @staticmethod
     def _locked_at_limit_up(current_rate: float, prev_close: float, ratio: float) -> bool:
@@ -1584,7 +1670,9 @@ class BacktestEngine:
                 proposed = float(custom)
         except Exception:
             proposed = current_rate
-        return self._slipped_price(proposed, buy=(side == "long"))
+        return self._round_to_tick(
+            pair, self._slipped_price(proposed, buy=(side == "long"))
+        )
 
     def _open_backtest_trade(
         self, pair: str, strategy: IStrategy, timeframe: str,
@@ -1593,25 +1681,55 @@ class BacktestEngine:
         wallets: Wallets, open_trades: Dict[str, LocalTrade],
         leverage: float,
     ) -> Optional[LocalTrade]:
-        amount = actual_stake / fill_rate if fill_rate > 0 else 0
-        if amount <= 0:
-            return None
         market_type = self._detect_market_type(pair)
-        # A-share lot rule: buys in multiples of 100 shares. Round down;
-        # below one lot the order is rejected by the broker.
-        if market_type == MarketType.STOCK and not is_short and self._enforce_lot_size():
-            from bullseye.order.stock_rules import LOT_SIZE, floor_to_lots
-
-            floored = floor_to_lots(amount)
-            if floored < LOT_SIZE:
+        spec = self._futures_contract(pair)
+        margin_used = 0.0
+        contract_size = 1.0
+        if spec is not None:
+            # Futures: the stake is a *margin* budget. Convert it into whole
+            # lots at the fill price, then derive notional and margin.
+            amount = spec.contracts_for_margin(actual_stake, fill_rate)
+            if amount < 1:
                 logger.debug(
-                    f"Entry skipped for {pair}: {amount:.2f} shares < 1 lot "
-                    f"(stake={actual_stake})"
+                    f"Entry skipped for {pair}: margin budget {actual_stake:.2f} "
+                    f"buys no lot at {fill_rate} (margin rate {spec.margin_rate})"
                 )
                 return None
-            amount = floored
-            actual_stake = amount * fill_rate
-        fee = self._calc_fee(actual_stake, is_sell=is_short)
+            fill_rate = spec.round_to_tick(fill_rate)
+            amount = spec.contracts_for_margin(actual_stake, fill_rate)
+            if amount < 1:
+                return None
+            actual_stake = spec.notional(fill_rate, amount)
+            margin_used = spec.margin(fill_rate, amount, is_short=is_short)
+            contract_size = spec.multiplier
+            fee = spec.fee(fill_rate, amount, "open")
+            if leverage != 1.0:
+                # Futures leverage is the margin rate itself; scaling the PnL
+                # by a strategy leverage as well would count it twice.
+                logger.debug(
+                    f"{pair}: ignoring strategy leverage {leverage} - futures "
+                    f"leverage comes from the {spec.margin_rate:.0%} margin rate"
+                )
+                leverage = 1.0
+        else:
+            amount = actual_stake / fill_rate if fill_rate > 0 else 0
+            if amount <= 0:
+                return None
+            # A-share lot rule: buys in multiples of 100 shares. Round down;
+            # below one lot the order is rejected by the broker.
+            if market_type == MarketType.STOCK and not is_short and self._enforce_lot_size():
+                from bullseye.order.stock_rules import LOT_SIZE, floor_to_lots
+
+                floored = floor_to_lots(amount)
+                if floored < LOT_SIZE:
+                    logger.debug(
+                        f"Entry skipped for {pair}: {amount:.2f} shares < 1 lot "
+                        f"(stake={actual_stake})"
+                    )
+                    return None
+                amount = floored
+                actual_stake = amount * fill_rate
+            fee = self._calc_fee(actual_stake, is_sell=is_short)
         trade = LocalTrade(
             pair=pair,
             exchange=self._config.exchange_name,
@@ -1628,6 +1746,8 @@ class BacktestEngine:
             min_rate=fill_rate,
             is_short=is_short,
             leverage=leverage,
+            contract_size=contract_size,
+            margin_used=margin_used,
         )
         stoploss = getattr(strategy, 'stoploss', 0)
         if stoploss != 0:
@@ -1639,7 +1759,11 @@ class BacktestEngine:
         open_trades[pair] = trade
         # Fees (open + close) are settled once at trade close via calc_profit;
         # deducting fee_open here as well would double-charge it.
-        wallets.deduct_amount(self._config.stake_currency, actual_stake)
+        # Futures lock margin only; the notional is the exposure, not cash.
+        wallets.deduct_amount(
+            self._config.stake_currency,
+            margin_used if spec is not None else actual_stake,
+        )
         logger.debug(f"Entry: {pair} @ {fill_rate}, stake={actual_stake}")
         self._fire_order_filled(
             strategy, pair, trade,
@@ -1671,14 +1795,8 @@ class BacktestEngine:
         _run_backtest_loop); no indicator recomputation happens here.
         """
         try:
-            # A-share limit-up: no sellers at the close fill — skip buys.
-            if (
-                self._detect_market_type(pair) == MarketType.STOCK
-                and self._enforce_price_limits()
-                and self._locked_at_limit_up(
-                    current_rate, prev_close, self._limit_ratio_for(pair)
-                )
-            ):
+            # Price limit: no counterparties at the limit - skip buys.
+            if self._limit_locked(pair, current_rate, prev_close, is_entry=True):
                 logger.debug(f"Entry skipped for {pair}: locked at limit-up")
                 return
 
@@ -1829,13 +1947,7 @@ class BacktestEngine:
         if trade.is_short:
             return
         # Limit-up lock rejects buys (mirrors entry logic).
-        if (
-            trade.market_type == MarketType.STOCK
-            and self._enforce_price_limits()
-            and self._locked_at_limit_up(
-                current_rate, prev_close, self._limit_ratio_for(trade.pair)
-            )
-        ):
+        if self._limit_locked(trade.pair, current_rate, prev_close, is_entry=True):
             return
         available = wallets.get_available_stake_amount()
         if available <= 0:
@@ -1875,25 +1987,39 @@ class BacktestEngine:
         if add <= 0:
             return
         add = min(add, available)
-        amount = add / fill if fill > 0 else 0
-        if amount <= 0:
-            return
-        if trade.market_type == MarketType.STOCK and self._enforce_lot_size():
-            from bullseye.order.stock_rules import LOT_SIZE, floor_to_lots
-
-            floored = floor_to_lots(amount)
-            if floored < LOT_SIZE:
-                logger.debug(f"Adjust skipped for {trade.pair}: below 1 lot")
+        spec = self._futures_contract(trade.pair)
+        if spec is not None:
+            # Futures: the add stake is a margin budget -> whole lots.
+            fill = spec.round_to_tick(fill)
+            amount = spec.contracts_for_margin(add, fill)
+            if amount < 1:
+                logger.debug(f"Adjust skipped for {trade.pair}: no lot fits")
                 return
-            amount = floored
-            add = amount * fill
-        fee = self._calc_fee(add, is_sell=False)
+            add = spec.notional(fill, amount)
+            fee = spec.fee(fill, amount, "open")
+            margin_add = spec.margin(fill, amount)
+        else:
+            amount = add / fill if fill > 0 else 0
+            if amount <= 0:
+                return
+            if trade.market_type == MarketType.STOCK and self._enforce_lot_size():
+                from bullseye.order.stock_rules import LOT_SIZE, floor_to_lots
+
+                floored = floor_to_lots(amount)
+                if floored < LOT_SIZE:
+                    logger.debug(f"Adjust skipped for {trade.pair}: below 1 lot")
+                    return
+                amount = floored
+                add = amount * fill
+            fee = self._calc_fee(add, is_sell=False)
+            margin_add = 0.0
         # Reprice to volume-weighted average cost.
         total_cost = trade.open_rate * trade.amount + fill * amount
         trade.amount += amount
         trade.open_rate = total_cost / trade.amount if trade.amount > 0 else fill
         trade.stake_amount += add
         trade.fee_open += fee
+        trade.margin_used += margin_add
         trade.nr_of_successful_entries += 1
         # Each add lot carries its own T+1 clock: the newest shares must
         # settle before the position (including them) can be sold.
@@ -1906,7 +2032,9 @@ class BacktestEngine:
         except Exception:
             pass
         trade.update_rate(fill)
-        wallets.deduct_amount(self._config.stake_currency, add)
+        wallets.deduct_amount(
+            self._config.stake_currency, margin_add if spec is not None else add
+        )
         logger.debug(
             f"Adjust: {trade.pair} +{amount:.0f} @ {fill:.2f}, "
             f"avg={trade.open_rate:.2f}, stake={trade.stake_amount:.2f}"
@@ -2002,15 +2130,13 @@ class BacktestEngine:
                 return
             profit_ratio = trade.calc_profit_ratio(current_rate)
 
-        # 0a. A-share limit-down: no buyers at the close fill — hold the
+        # 0a. Price limit-down: no buyers at the close fill — hold the
         # position (all exit paths blocked; end-of-data force_exit still
-        # applies for accounting). Only for long stock positions.
+        # applies for accounting). Only for long positions.
         if (
             not trade.is_short
-            and trade.market_type == MarketType.STOCK
-            and self._enforce_price_limits()
-            and self._locked_at_limit_down(
-                current_rate, prev_close, self._limit_ratio_for(trade.pair)
+            and self._limit_locked(
+                trade.pair, current_rate, prev_close, is_entry=False
             )
         ):
             logger.debug(f"Exit blocked for {trade.pair}: locked at limit-down")
@@ -2328,8 +2454,18 @@ class BacktestEngine:
         """Close a trade and record the result."""
         # Slippage: exits are market orders - longs sell lower, shorts buy back higher
         rate = self._slipped_price(rate, buy=trade.is_short)
-        close_value = rate * trade.amount
-        fee_close = self._calc_fee(close_value, is_sell=not trade.is_short)
+        spec = self._futures_contract(trade.pair)
+        if spec is not None:
+            rate = spec.round_to_tick(rate)
+            # 平今 (close today) when the position was opened on the same
+            # trading day; daily bars make the calendar day the trading day.
+            close_today = trade.open_date.date() == current_date.date()
+            fee_close = spec.fee(
+                rate, trade.amount, "close", close_today=close_today
+            )
+        else:
+            close_value = rate * trade.amount
+            fee_close = self._calc_fee(close_value, is_sell=not trade.is_short)
 
         trade.close_date = current_date
         trade.close_rate = rate
@@ -2355,7 +2491,12 @@ class BacktestEngine:
 
         # Update wallet (floor at 0: leveraged wipeout cannot add negative;
         # Wallets.add_amount rejects negative amounts).
-        total_return = trade.stake_amount + profit_abs
+        # Futures release the margin that was locked at entry and settle the
+        # PnL; stocks return the full notional that was paid out.
+        if spec is not None:
+            total_return = trade.margin_used + profit_abs
+        else:
+            total_return = trade.stake_amount + profit_abs
         wallets.add_amount(
             self._config.stake_currency, max(0.0, total_return)
         )

@@ -128,6 +128,15 @@ class LocalTrade:
     leverage: float = 1.0
     interest_rate: float = 0.0
 
+    # ==================== Futures specifics ====================
+    # Contract multiplier (合约乘数): 1 lot of IF is 300 index points, of RB
+    # is 10 tonnes. 1.0 for stocks/crypto, where "amount" already is the
+    # tradable unit.
+    contract_size: float = 1.0
+    # Margin locked for this position (futures). Stocks lock the full
+    # notional instead, so this stays 0.0 there.
+    margin_used: float = 0.0
+
     # ==================== Orders ====================
     orders: List[Dict[str, Any]] = field(default_factory=list)
     # Freqtrade-compat: open (unfilled) orders; the iterative backtest
@@ -313,9 +322,11 @@ class LocalTrade:
         if not math.isfinite(current_rate):
             return 0.0
 
-        # Current value
-        current_value = current_rate * self.amount
-        open_value = self.open_rate * self.amount
+        # Current value. For futures "amount" counts lots, so the contract
+        # multiplier converts lots into traded value.
+        size = self.contract_size or 1.0
+        current_value = current_rate * self.amount * size
+        open_value = self.open_rate * self.amount * size
 
         if self.is_short:
             raw_profit = open_value - current_value
