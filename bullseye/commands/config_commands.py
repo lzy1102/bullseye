@@ -31,6 +31,21 @@ dry_run_wallet: 1000
 # Options: auto, crypto, stock, future
 market_type: auto
 
+# ==================== Trading Mode (Freqtrade-compatible) ====================
+# auto | spot | futures | margin
+#   auto    - detect per pair, so one config can hold A-shares, crypto and
+#             futures at once
+#   spot    - no leverage, no shorting
+#   futures - force the futures path: margin accounting, contract multiplier,
+#             per-lot fees; leverage comes from the strategy's leverage()
+#             callback (1x notional by default, the broker cap 1 / margin
+#             rate is passed as max_leverage)
+trading_mode: auto
+
+# Margin mode for futures: isolated (per position) | cross (shared pool).
+# Only isolated is modelled so far.
+margin_mode: isolated
+
 # ==================== Settlement Configuration ====================
 settlement:
   mode: auto
@@ -72,6 +87,9 @@ future:
   appid: ""
   auth_code: ""
   product_info: ""
+  # Contract specs (multiplier, margin rate, per-lot fees, tick size), written
+  # by scripts/research/futures_daily_data.py
+  contracts_file: "user_data/data/futures/contracts.json"
 
 # ==================== Pairlist Configuration ====================
 pairlist:
@@ -240,8 +258,17 @@ def new_config(config: Optional[str], market_type: Optional[str], exchange: Opti
     console.print("[bold green]Creating new Bullseye configuration[/bold green]\n")
 
     if non_interactive:
-        # Use default configuration
-        config_content = DEFAULT_CONFIG
+        # Default configuration, adjusted for the requested market
+        config_data = {}
+        if market_type:
+            config_data['market_type'] = market_type
+            if market_type == 'crypto':
+                config_data['exchange_name'] = exchange or 'binance'
+            elif market_type == 'stock':
+                config_data['exchange_name'] = 'xtp'
+            elif market_type == 'future':
+                config_data['exchange_name'] = 'ctp'
+        config_content = generate_config_content(config_data)
     else:
         # Interactive configuration
         config_data = {}
@@ -305,12 +332,41 @@ def new_config(config: Optional[str], market_type: Optional[str], exchange: Opti
     console.print("\n[yellow]Next steps:[/yellow]")
     console.print(f"  1. Edit the configuration: {config_path}")
     console.print("  2. Set your API keys and secrets")
-    console.print("  3. Run: bullseye trade --dry")
+    if market_type == 'future':
+        console.print("  3. Build the futures dataset:")
+        console.print("       python3 scripts/research/futures_daily_data.py "
+                      "--out user_data/data/futures")
+        console.print("       python3 scripts/research/futures_continuous.py "
+                      "--out user_data/data/futures")
+        console.print("  4. Backtest: bullseye backtesting --strategy <Name> "
+                      "--pairs RB0@SHFE")
+        console.print("  5. Paper trade: bullseye trade --dry")
+    else:
+        console.print("  3. Run: bullseye trade --dry")
 
 
 def generate_config_content(config_data: dict) -> str:
     """Generate configuration content based on user input."""
     content = DEFAULT_CONFIG
+
+    # Market specific defaults: a futures or A-share config is priced in CNY,
+    # and the trading mode tells the engine which market model to use.
+    market = config_data.get('market_type')
+    if market in ('stock', 'future'):
+        content = content.replace('stake_currency: USDT', 'stake_currency: CNY')
+        content = content.replace('fiat_display_currency: USD',
+                                  'fiat_display_currency: CNY')
+    if market == 'future':
+        content = content.replace('trading_mode: auto', 'trading_mode: futures')
+    elif market == 'stock':
+        content = content.replace('trading_mode: auto', 'trading_mode: spot')
+
+    # The template must name the gateway of the market it was generated for.
+    if 'exchange_name' not in config_data and market:
+        config_data = dict(config_data)
+        config_data['exchange_name'] = {
+            'crypto': 'binance', 'stock': 'xtp', 'future': 'ctp',
+        }.get(market, 'binance')
 
     # Update with user settings
     if 'market_type' in config_data:

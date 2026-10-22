@@ -162,3 +162,40 @@ class TestCLICommands:
 
         assert result.exit_code == 0
         assert 'strategy' in result.output.lower()
+
+
+class TestNewConfigTemplates:
+    """`bullseye new-config` must produce a usable template per market."""
+
+    @staticmethod
+    def _content(market_type):
+        from bullseye.commands.config_commands import generate_config_content
+        return generate_config_content({"market_type": market_type})
+
+    def test_futures_template_is_futures_ready(self):
+        content = self._content("future")
+        assert "market_type: future" in content
+        assert "trading_mode: futures" in content
+        assert "margin_mode: isolated" in content
+        assert "stake_currency: CNY" in content
+        assert "name: ctp" in content
+        assert "contracts_file" in content
+        # the live SimNow front, not the retired one
+        assert "182.254.243.31:30001" in content
+        assert "180.168.146.187" not in content
+
+    def test_stock_template_is_spot(self):
+        content = self._content("stock")
+        assert "market_type: stock" in content
+        assert "trading_mode: spot" in content
+        assert "stake_currency: CNY" in content
+        assert "name: xtp" in content
+
+    def test_crypto_template_keeps_auto_mode(self):
+        content = self._content("crypto")
+        assert "trading_mode: auto" in content
+        assert "name: binance" in content
+
+    def test_template_documents_the_futures_trading_mode(self):
+        content = self._content("future")
+        assert "auto | spot | futures | margin" in content

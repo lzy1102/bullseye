@@ -834,6 +834,9 @@ SimNow 前置（`182.254.243.31:30001/30011`）实测：握手成功 → 行情�
 复现：
 
 ```bash
+# 0. 配置模板（trading_mode: futures + CTP 段 + contracts_file）
+bullseye new-config --market-type future --non-interactive
+
 # 1. 主力连续 + 合约规格（手续费/保证金/乘数）
 python3 scripts/research/futures_daily_data.py --out user_data/data/futures
 # 2. 复权连续序列 + 换月事件（覆盖第 1 步的 {pair}-1d.parquet，原序列留 .raw.parquet）

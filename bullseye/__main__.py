@@ -990,4 +990,14 @@ cli.add_command(lookahead_analysis)
 cli.add_command(recursive_analysis)
 
 if __name__ == "__main__":
+    # The CLI prints box drawing and check marks. On a Chinese Windows console
+    # (GBK) rich then dies with UnicodeEncodeError, so force UTF-8 output
+    # with a replacement fallback instead of crashing the command.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            if _stream is not None and _stream.encoding \
+                    and _stream.encoding.lower() not in ("utf-8", "utf8"):
+                _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     cli()
