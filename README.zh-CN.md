@@ -28,6 +28,9 @@
   - **区间预热**：自动加载 timerange 之前的数据，SMA250/周线门禁等在首个交易日即有效
   - **`backtest.fill_next_open`**：可选的次日开盘成交语义（默认仍为当根收盘成交）
   - Baostock日线额外落盘流动性/估值因子列（`turn`/`peTTM`/`pbMRQ`/`psTTM`/`pcfNcfTTM`/`isST`）
+  - **期货日线回测**：按保证金预算换算整手、按手手续费（开/平/平今）、合约乘数、
+    tick 网格成交、按上一结算价判涨跌停（规格见 `user_data/data/futures/contracts.json`，
+    详见 [`docs/strategies.md`](docs/strategies.md) 的「期货线」一节）
 - **@informative 多周期**：回测与实盘一致执行，防未来函数合并
 - **超参优化**：随机搜索 + 多种损失函数
 - **实盘链路**：订单执行器/仓位管理/钱包同步走网关；T+1可用量、整手、涨跌停规则内建
