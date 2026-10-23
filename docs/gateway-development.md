@@ -166,9 +166,18 @@ broker only needs a new `local_profile.json` (account, SH/SZ shareholder IDs,
 name, `deptid`, `verinfo`, site list).
 
 ```bash
-pip install ths-trade-client
+pip install "ths-trade-client>=0.13.1"
 ths-capture-profile            # with xiadan.exe running -> local_profile.json
 ```
+
+Pin **>= 0.13.1**: before it, `precheck()` waited for a 0x10 reply that never
+comes during trading hours (the 0124 answer arrives on the 0x50 push channel),
+so it hung until timeout. `buy_market` / `limit_order` call precheck internally
+for the reference price, so an order placed mid-session would block for the
+whole timeout. 0.13.1 also cleans the GBK reply text (`clean_text`), which is
+what lets `extract_counter_no` read 委托编号 from `reply['text']` instead of
+falling back to a reconcile. `tests/test_ths_gateway.py::TestThsClientContract`
+pins the version floor and the methods we call.
 
 ```yaml
 market_type: custom
@@ -255,7 +264,13 @@ replies is defensive throughout.
 `cancel_order` still raises `NotImplementedError`, and
 `_LIVE_TRADING_ENABLED` defaults to **False**: without 撤单 an exit that misses
 becomes an unmanageable position, so the master switch stays off until cancel
-lands. Everything above is covered offline by `tests/test_ths_gateway.py`
+lands.
+
+As of v0.13.1 the 撤单 command family is identified (XX02: `0222`/`0322`;
+`0122`/`0222`/`0322` are refused by the service layer before the body is parsed,
+`0220`/`0320`/`0422`/`0224` answer "无效请求", `0212` "验证签名错"), but no capture
+with a live cancellable order exists yet — the parameters (most likely `htbh`
+合同号) are still unknown. That capture is the remaining input for blocker #1. Everything above is covered offline by `tests/test_ths_gateway.py`
 (scripted fake counter - no network, no ths-trade-client).
 
 ### Rollout order

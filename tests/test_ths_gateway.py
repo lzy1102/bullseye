@@ -479,3 +479,44 @@ def test_capture_script_default_output_is_gitignored():
     r = subprocess.run(["git", "check-ignore", "-q", str(mod.DEFAULT_OUT)],
                        cwd=ROOT)
     assert r.returncode == 0, "default profile path must stay git-ignored"
+
+
+class TestThsClientContract:
+    """Pin the ths-trade-client surface this gateway depends on.
+
+    The client is an external repo we do not vendor, so an upstream update can
+    silently break us. These tests fail fast when a symbol we call disappears
+    or changes signature. Skipped when ths-trade-client is not installed.
+    """
+
+    @staticmethod
+    def _client():
+        return pytest.importorskip("ths_client")
+
+    def test_client_version_floor(self):
+        """precheck() hangs mid-session before 0.13.1; we must not run it."""
+        mod = self._client()
+        raw = getattr(mod, "__version__", "") or ""
+        parts = [int(p) for p in raw.split(".")[:3] if p.isdigit()]
+        assert parts, f"cannot parse ths_client version {raw!r}"
+        assert tuple(parts) >= (0, 13, 1), (
+            f"ths-trade-client {raw} < 0.13.1: precheck() blocks during "
+            "trading hours, orders would time out"
+        )
+
+    def test_methods_we_call_exist(self):
+        mod = self._client()
+        client = mod.TradeClient
+        for name in ("from_profile", "start", "close", "query_balance",
+                     "query_positions", "query_orders", "account_info",
+                     "buy_market", "sell_market", "limit_order"):
+            assert callable(getattr(client, name, None)), f"missing {name}"
+
+    def test_cancel_is_still_unimplemented_upstream(self):
+        """Blocker #1: our cancel_order stays disabled until upstream ships it."""
+        mod = self._client()
+        client = mod.TradeClient
+        assert not hasattr(client, "cancel_order"), (
+            "ths-trade-client now has cancel_order: wire it into the gateway "
+            "and re-check the double-submit reconcile path"
+        )

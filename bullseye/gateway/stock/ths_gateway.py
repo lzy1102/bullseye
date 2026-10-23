@@ -21,11 +21,21 @@ Implementation status (read-only first, deliberately):
 
 _ORDER_BLOCKERS
     1. ths-trade-client has no cancel (撤单) yet. Our exits (chandelier, stop,
-       time-stop) all need it. The repo ships `ths-capture-orders` to grab the
-       撤单 frame, so this is fixable.
+       time-stop) all need it. As of v0.13.1 the 撤单 command family is known
+       (XX02: 0222/0322; 0122/0222/0322 answer "功能的服务，敬请谅解！" from the
+       service layer before parsing the body), but the parameters - probably
+       `htbh` 合同号 - still need a capture with a cancellable order live.
+       The repo ships `ths-capture-orders` for exactly that.
     2. TradeClient auto-retries a failed request once after reconnect. Order
        placement is NOT idempotent, so a retry can double-buy. The live path
        must instead reconcile against 当日委托 before resending.
+
+Requires ths-trade-client >= 0.13.1: v0.13.1 fixed `precheck()` hanging during
+trading hours (the 0124 reply comes back as a 0x50 push, not a 0x10 reply) and
+started cleaning the GBK reply text (`clean_text`), which is what lets
+`extract_counter_no` read 委托编号 instead of falling back to a reconcile. Our
+order path calls precheck internally (buy_market / limit_order use it for the
+reference price), so 0.13.0 would block an order for the full timeout mid-session.
 
 Field semantics of the counter replies are GBK key=value strings; the parsing
 here is defensive (missing/unknown fields degrade to None instead of raising)
