@@ -148,16 +148,18 @@ def in_trading_window(now: Optional[datetime] = None) -> bool:
 class ThsGateway(BaseGateway):
     """THS counter gateway.
 
-    Live order placement is implemented but **hard-gated** by
-    ``_LIVE_TRADING_ENABLED`` (default False). Flipping it requires cancel
-    support (see _ORDER_BLOCKERS) - the placement path is written so that an
-    ambiguous result is reconciled against 当日委托 rather than retried, since
-    order placement is not idempotent.
+    Live order placement is implemented but **off by default**. It is switched
+    on by ``custom.live_trading: true`` in the config (default false), which is
+    forwarded to ``connect()``. Flipping it requires cancel support (see
+    _ORDER_BLOCKERS) - the placement path is written so that an ambiguous
+    result is reconciled against 当日委托 rather than retried, since order
+    placement is not idempotent.
     """
 
-    # Master switch. Deliberately off: cancel (撤单) is still missing upstream,
-    # so every exit path (stop / chandelier / time-stop) could not be honoured.
-    _LIVE_TRADING_ENABLED: bool = False
+    # Default for custom.live_trading when the key is absent. Deliberately
+    # off: cancel (撤单) is still missing upstream, so every exit path
+    # (stop / chandelier / time-stop) could not be honoured.
+    LIVE_TRADING_DEFAULT: bool = False
 
     def __init__(
         self,
@@ -183,6 +185,7 @@ class ThsGateway(BaseGateway):
         self._orders: Dict[str, Dict[str, Any]] = {}    # client id -> full record
         self._by_counter: Dict[str, str] = {}           # 委托编号 -> client id
         self._last_status: Dict[str, Status] = {}
+        self._live_trading: bool = self.LIVE_TRADING_DEFAULT
 
     # ==================== Lifecycle ====================
 
@@ -196,6 +199,7 @@ class ThsGateway(BaseGateway):
         poll_interval: float = 0.5,
         reconcile_grace: float = 3.0,
         enforce_trading_window: bool = True,
+        live_trading: bool = False,
         **kwargs,
     ) -> None:
         """
@@ -206,6 +210,10 @@ class ThsGateway(BaseGateway):
         Optional kwargs:
             heartbeat: keepalive seconds (0 disables; default 30)
             client: pre-built TradeClient (tests / reuse)
+            live_trading: allow send_order to reach the counter (default false;
+                set via `custom.live_trading: true`). cancel_order is still
+                unsupported upstream, so enabling this means an exit that
+                misses cannot be withdrawn - keep it false until cancel lands.
         """
         if client is not None:
             self._client = client
@@ -228,6 +236,18 @@ class ThsGateway(BaseGateway):
         self._poll_interval = float(poll_interval)
         self._reconcile_grace = float(reconcile_grace)
         self._enforce_window = bool(enforce_trading_window)
+        self._live_trading = bool(live_trading)
+        if self._live_trading:
+            self.logger_warning(
+                "THS LIVE TRADING ENABLED (custom.live_trading=true): send_order "
+                "will reach the counter. cancel_order is still unsupported "
+                "upstream, so a missed exit cannot be withdrawn."
+            )
+        else:
+            self.logger_info(
+                "THS live trading disabled (custom.live_trading=false): "
+                "read-only, send_order will refuse."
+            )
 
         with self._lock:
             self._client.heartbeat = int(heartbeat)
@@ -397,12 +417,12 @@ class ThsGateway(BaseGateway):
             5. on an ambiguous failure, reconcile first and only resend once
                after `reconcile_grace` seconds.
         """
-        if not self._LIVE_TRADING_ENABLED:
+        if not self._live_trading:
             raise NotImplementedError(
-                "ThsGateway.send_order is gated off (_LIVE_TRADING_ENABLED=False). "
-                "Enable only after ths-trade-client supports cancel (撤单): every "
-                "exit path needs it, and an un-cancellable live order is a "
-                "position you cannot manage."
+                "ThsGateway.send_order is gated off (custom.live_trading is "
+                "false). Enable only after ths-trade-client supports cancel "
+                "(撤单): every exit path needs it, and an un-cancellable live "
+                "order is a position you cannot manage."
             )
 
         symbol = normalize_symbol(req.get("symbol", ""))

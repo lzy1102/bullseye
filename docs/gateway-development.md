@@ -246,7 +246,7 @@ pushes (`on_push` → throttled `on_tick`) and `send_order`.
 `send_order` is written for the fact that **order placement is not
 idempotent**, so it never trusts a bare retry:
 
-1. guards — master switch `_LIVE_TRADING_ENABLED`, kill-switch file, local
+1. guards — `custom.live_trading` (default false), kill-switch file, local
    A-share session window (`enforce_trading_window`);
 2. local dedup — the same `client_order_id` is never sent twice;
 3. **reconcile before send** — if 当日委托 already holds a live order with the
@@ -261,10 +261,11 @@ orders as `THS-EXT-<no>`), `confirm_order()` (publishes status changes and fill
 deltas) and the `Status` mapping round it out. Parsing of the GBK key=value
 replies is defensive throughout.
 
-`cancel_order` still raises `NotImplementedError`, and
-`_LIVE_TRADING_ENABLED` defaults to **False**: without 撤单 an exit that misses
-becomes an unmanageable position, so the master switch stays off until cancel
-lands.
+`cancel_order` still raises `NotImplementedError`, and `send_order` is gated
+by `custom.live_trading`, which defaults to **false**: without 撤单 an exit that
+misses becomes an unmanageable position, so the switch stays off until cancel
+lands. The flag is read by `connect()`, and startup logs which mode it is in
+(`THS live trading disabled (custom.live_trading=false): read-only`).
 
 As of v0.13.1 the 撤单 command family is identified (XX02: `0222`/`0322`;
 `0122`/`0222`/`0322` are refused by the service layer before the body is parsed,
@@ -279,7 +280,7 @@ with a live cancellable order exists yet — the parameters (most likely `htbh`
    broker app. Confirms login, bootstrap and field semantics.
 2. Add cancel (capture the frame with `ths-capture-orders`, implement, cover in
    offline tests).
-3. Flip `_LIVE_TRADING_ENABLED` behind an explicit env/config switch, dry-run
+3. Flip `custom.live_trading` behind the explicit config switch, dry-run
    first against 模拟盘, then a single 100-share order.
 
 ## 7. Acceptance checklist

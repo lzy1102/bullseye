@@ -114,6 +114,15 @@ class TestConnectKwargs:
         assert kwargs["kill_switch_file"] == ".stop"
         assert "gateway" not in kwargs
 
+    def test_custom_kwargs_carry_ths_live_trading(self):
+        bot = make_bot("custom", custom={
+            "gateway": "bullseye.gateway.stock.ths_gateway.ThsGateway",
+            "profile": "user_data/local_profile.json",
+            "live_trading": True,
+        })
+        kwargs = bot._gateway_connect_kwargs()
+        assert kwargs["live_trading"] is True
+
     def test_crypto_kwargs_from_exchange_section(self):
         bot = make_bot("crypto", exchange={
             "name": "binance", "key": "K", "secret": "S", "sandbox": True,

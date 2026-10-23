@@ -177,6 +177,8 @@ future:
 # custom:
 #   gateway: "bullseye.gateway.stock.ths_gateway.ThsGateway"
 #   profile: "user_data/local_profile.json"   # path, or THS_PROFILE env var
+#   live_trading: false                      # false = read-only; true lets send_order
+#                                            # reach the counter (needs cancel, see docs)
 #   heartbeat: 30                            # counter keepalive seconds (0 = off)
 #   kill_switch_file: "user_data/KILL_TRADING"  # create file -> no new orders
 #   confirm_timeout: 10                      # seconds to wait for order confirmation

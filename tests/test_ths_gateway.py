@@ -185,7 +185,7 @@ def test_close_is_idempotent():
     assert client.closed is True
 
 # ==========================================================================
-# Order placement machinery (gated by _LIVE_TRADING_ENABLED)
+# Order placement machinery (gated by custom.live_trading)
 # ==========================================================================
 
 class ScriptedClient(FakeThsClient):
@@ -221,15 +221,22 @@ class ScriptedClient(FakeThsClient):
 
 def make_trading_gateway(client=None):
     gw = make_gateway(client or ScriptedClient())
-    gw._LIVE_TRADING_ENABLED = True
-    gw.connect(heartbeat=0, enforce_trading_window=False)
+    gw.connect(heartbeat=0, enforce_trading_window=False, live_trading=True)
     return gw
 
 
-def test_send_order_blocked_by_master_switch():
-    gw = make_gateway()          # default: _LIVE_TRADING_ENABLED = False
+def test_send_order_blocked_unless_live_trading_enabled():
+    gw = make_gateway()
+    gw.connect(heartbeat=0, enforce_trading_window=False)   # default: off
+    assert gw._live_trading is False
     with pytest.raises(NotImplementedError):
         gw.send_order({"symbol": "601398", "volume": 100})
+
+
+def test_live_trading_flag_comes_from_connect():
+    gw = make_gateway()
+    gw.connect(heartbeat=0, enforce_trading_window=False, live_trading=True)
+    assert gw._live_trading is True
 
 
 def test_send_order_maps_counter_number_and_publishes():
@@ -244,8 +251,7 @@ def test_send_order_maps_counter_number_and_publishes():
     client = ScriptedClient()
     ee = RecordingEngine()
     gw = ThsGateway(ee, "THS", client=client)
-    gw._LIVE_TRADING_ENABLED = True
-    gw.connect(heartbeat=0, enforce_trading_window=False)
+    gw.connect(heartbeat=0, enforce_trading_window=False, live_trading=True)
     orderid = gw.send_order({"symbol": "601398", "volume": 100})
     assert orderid and orderid.startswith("THS-")
     assert client.buy_calls == 1
