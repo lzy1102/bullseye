@@ -41,6 +41,16 @@ def variants():
         out.append((f"sq{int(p*100)}", {"squeeze_pct": p}))
     out.append(("no_expand", {"require_expand": False}))
     out.append(("trail", {"use_trail": True}))
+    # FreqAI port: predicted vol -> position scaling
+    for lo, hi in ((0.3, 1.5), (0.5, 1.5), (0.5, 2.0)):
+        out.append((f"ml_vol_{lo}_{hi}", {"vol_sizing": "ml",
+                                          "vol_scale_lo": lo, "vol_scale_hi": hi}))
+    out.append(("ml_vol_glob", {"vol_sizing": "ml", "vol_target_mode": "global",
+                                "vol_target": 0.018}))
+    out.append(("atr_vol", {"vol_sizing": "atr"}))
+    out.append(("atr_vol_glob", {"vol_sizing": "atr",
+                                 "vol_target_mode": "global",
+                                 "vol_target": 0.028}))
     return out
 
 

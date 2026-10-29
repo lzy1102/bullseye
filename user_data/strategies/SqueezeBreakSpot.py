@@ -31,6 +31,9 @@ SqueezeBreakSpot - 布林带挤压突破（A股日线，只做多）, 1d.
 
 回测口径: 10万, 2023-01-01~2026-10-10, 费 0.001/边, T+1, 同根收盘, 复利。
 """
+from pathlib import Path
+
+import numpy as np
 import pandas as pd
 from pandas import DataFrame
 
@@ -63,6 +66,19 @@ class SqueezeBreakSpot(IStrategy):
     trail_activate: float = 0.05
     trail_atr_mult: float = 2.5
 
+    # ---- 波动率定仓 (FreqAI 移植: 预测波动 -> 仓位缩放) ----
+    # 尸检: 日线波动可预测 (walk-forward OOS IC 0.71, 十分位 91->382bp 单调),
+    # 方向仍不可预测 (高波动组前向收益 +48bp, 低波动组 ~0, 非单调)。
+    # ml = 读 user_data/data/volpred.parquet (scripts/research/vol_forecast.py 生成,
+    #      walk-forward 岭回归, 无前视); atr = 只用当日 ATR 自校准, 无需数据文件。
+    vol_sizing: str = "off"        # off | atr | ml
+    vol_target_mode: str = "self"  # self = 该股自身250日波动中位; global = vol_target
+    vol_target: float = 0.018      # global 模式的日波动目标
+    vol_scale_lo: float = 0.3
+    vol_scale_hi: float = 1.5
+    vol_sidecar: str = "volpred.parquet"
+    _volpred_cache = None
+
     # ---- 组合 ----
     max_slots: int = 3
     index_pair: str = "000300.SH"
@@ -90,7 +106,50 @@ class SqueezeBreakSpot(IStrategy):
             axis=1,
         ).max(axis=1)
         dataframe["atr"] = tr.rolling(20).mean().fillna(0.0)
+
+        # ---- 波动率定仓：est 越低，仓位越大（相对该股自身常态或全局目标）----
+        if self.vol_sizing != "off":
+            if self.vol_sizing == "ml":
+                est = self._vol_estimate(dataframe, metadata.get("pair", ""))
+            else:
+                est = dataframe["atr"]
+            if self.vol_target_mode == "self":
+                base = est.rolling(250).median().shift(1)
+            else:
+                base = self.vol_target
+            scale = (base / est.replace(0, np.nan)).clip(
+                self.vol_scale_lo, self.vol_scale_hi
+            )
+            dataframe["vol_scale"] = scale.fillna(1.0)
+        else:
+            dataframe["vol_scale"] = 1.0
         return dataframe
+
+    def _volpred(self) -> pd.DataFrame:
+        cached = SqueezeBreakSpot._volpred_cache
+        if cached is not None:
+            return cached
+        datadir = (self.config or {}).get("datadir", "user_data/data")
+        path = Path(datadir) / self.vol_sidecar
+        if path.exists():
+            d = pd.read_parquet(path)
+            d["date"] = pd.to_datetime(d["date"])
+        else:
+            d = pd.DataFrame(columns=["symbol", "date", "pred_vol"])
+        SqueezeBreakSpot._volpred_cache = d
+        return d
+
+    def _vol_estimate(self, dataframe: DataFrame, pair: str) -> pd.Series:
+        """Walk-forward predicted daily vol for `pair` (NaN when unavailable)."""
+        side = self._volpred()
+        if side.empty or not pair:
+            return pd.Series(np.nan, index=dataframe.index)
+        sub = side[side["symbol"] == pair][["date", "pred_vol"]]
+        if sub.empty:
+            return pd.Series(np.nan, index=dataframe.index)
+        dates = pd.to_datetime(dataframe["date"])
+        merged = pd.DataFrame({"date": dates}).merge(sub, on="date", how="left")
+        return pd.Series(merged["pred_vol"].to_numpy(), index=dataframe.index)
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         squeeze = (
@@ -151,6 +210,15 @@ class SqueezeBreakSpot(IStrategy):
         if not total or total <= 0:
             return None
         stake = total / max(1, int(self.max_slots))
+        if self.vol_sizing != "off":
+            try:
+                df, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+                if df is not None and not df.empty and "vol_scale" in df.columns:
+                    scale = float(df["vol_scale"].iloc[-1])
+                    if np.isfinite(scale) and scale > 0:
+                        stake *= scale
+            except Exception:
+                pass
         if max_stake and stake > max_stake:
             stake = max_stake
         return stake
