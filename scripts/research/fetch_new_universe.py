@@ -49,6 +49,8 @@ def main():
     for c in allc["code"]:
         if not (c.startswith("sh.6") or c.startswith("sz.0") or c.startswith("sz.3")):
             continue
+        if c.startswith("sz.399"):      # 深证/国证指数，不是个股
+            continue
         sym = c.split(".")[1] + "." + ("SH" if c.startswith("sh") else "SZ")
         if sym in have:
             continue
@@ -80,7 +82,8 @@ def main():
         out = d[["date", "open", "high", "low", "close", "volume",
                  "preclose", "turn", "pctChg", "isST"]].reset_index(drop=True)
         # liquidity floor, same spirit as the screen (median amount >= 1e8)
-        if float((out["close"] * out["volume"] * 100).median()) < 5e7:
+        # baostock volume is in shares, not lots
+        if float((out["close"] * out["volume"]).median()) < 5e7:
             continue
         out.to_parquet(os.path.join(args.out, f"{sym}-1d.parquet"), index=False)
         got += 1
