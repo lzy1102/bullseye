@@ -65,7 +65,7 @@ def zscore(df, winsor=(0.01, 0.99)):
 
 def backtest(px, pb, turn, fin, start, end, top=30, fee=0.001, lag=LAG_DAYS,
              use=("value", "quality", "growth", "mom", "lowvol"),
-             industry=None, max_per_ind=6):
+             industry=None, max_per_ind=6, universe=None):
     dates = px.loc[start:end].index
     ret = px.pct_change().fillna(0).loc[dates]
     months = pd.Series(dates).dt.to_period("M").to_numpy()
@@ -100,6 +100,9 @@ def backtest(px, pb, turn, fin, start, end, top=30, fee=0.001, lag=LAG_DAYS,
     for d in rebal:
         row = score.loc[d].dropna()
         row = row[px.loc[d, row.index].notna()]
+        if universe is not None:
+            allowed = universe.get(d, set())
+            row = row[row.index.isin(allowed)]
         if row.empty:
             w.loc[d] = cur
             continue
@@ -149,6 +152,8 @@ def main():
     ap.add_argument("--start", default="2016-01-01")
     ap.add_argument("--end", default="2026-10-10")
     ap.add_argument("--fee", type=float, default=0.001)
+    ap.add_argument("--universe", default="",
+                    help="point-in-time membership parquet (date,symbol)")
     args = ap.parse_args()
     px, pb, turn, amount, fin = load(args.data)
     print(f"prices {px.shape[1]} symbols, fundamentals {len(fin)}, "
@@ -161,8 +166,29 @@ def main():
         ind = {r["code"].split(".")[1] + "." + ("SH" if r["code"].startswith("sh") else "SZ"):
                str(r["industry"])[:2] for _, r in d.iterrows()}
 
-    ew = (1 + px.loc[args.start:args.end].pct_change().mean(axis=1).fillna(0)).cumprod()
-    show("HS300 equal-weight", stats(ew))
+    uni = None
+    if args.universe:
+        u = pd.read_parquet(args.universe)
+        u["date"] = pd.to_datetime(u["date"])
+        uni = u.groupby("date")["symbol"].apply(set).to_dict()
+        print(f"PIT universe: {len(uni)} dates, "
+              f"{u['symbol'].nunique()} names
+")
+
+    if uni is not None:
+        sub = px.loc[args.start:args.end]
+        mask = pd.DataFrame(False, index=sub.index, columns=sub.columns)
+        for d, members in uni.items():
+            if d in mask.index:
+                cols = [c for c in members if c in mask.columns]
+                mask.loc[d, cols] = True
+        mask = mask.ffill().fillna(False)
+        r = sub.pct_change().fillna(0).where(mask)
+        ew = (1 + r.mean(axis=1).fillna(0)).cumprod()
+        show("PIT universe equal-weight", stats(ew))
+    else:
+        ew = (1 + px.loc[args.start:args.end].pct_change().mean(axis=1).fillna(0)).cumprod()
+        show("universal equal-weight", stats(ew))
     for top in (20, 30, 50):
         for label, use, use_ind in (
             ("all 5 factors", ("value", "quality", "growth", "mom", "lowvol"), False),
@@ -171,7 +197,8 @@ def main():
             ("mom+lowvol", ("mom", "lowvol"), False),
         ):
             eq, tv = backtest(px, pb, turn, fin, args.start, args.end, top=top,
-                              fee=args.fee, use=use, industry=ind if use_ind else None)
+                              fee=args.fee, use=use, industry=ind if use_ind else None,
+                              universe=uni)
             show(f"top{top} {label}", stats(eq), f"turnover {tv.sum():.0f}x")
     return 0
 
