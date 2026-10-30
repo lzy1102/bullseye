@@ -1,0 +1,53 @@
+max_open_trades: 3
+stake_currency: CNY
+stake_amount: unlimited
+tradable_balance_ratio: 0.99
+dry_run: true
+dry_run_wallet: 70000
+market_type: stock
+settlement: t1
+strategy: MacdCandle  # 组合 A 腿：70% 资金
+strategy_path: user_data/strategies
+timeframe: 1d
+datadir: user_data/data
+dataformat_ohlcv: parquet
+pairlist:
+  - method: StaticPairList
+    config:
+      pairs:
+        - 688041.SH
+        - 688256.SH
+        - 603019.SH
+        - 601138.SH
+        - 603986.SH
+        - 688008.SH
+        - 002049.SZ
+        - 601985.SH
+        - 600025.SH
+        - 300750.SZ
+        - 002594.SZ
+        - 688981.SH
+        - 600276.SH
+        - 603259.SH
+        - 300760.SZ
+        - 000333.SZ
+        - 000651.SZ
+        - 601318.SH
+        - 600030.SH
+        - 600887.SH
+        - 600900.SH
+        - 601088.SH
+        - 600941.SH
+        - 601899.SH
+        - 600309.SH
+        - 002475.SZ
+        - 000063.SZ
+        - 601398.SH
+        - 601288.SH
+        - 601988.SH
+        - 601939.SH
+        - 000300.SH
+exchange:
+  name: binance
+backtest:
+  fee: 0.001
