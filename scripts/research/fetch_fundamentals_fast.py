@@ -46,6 +46,7 @@ def main():
     ap.add_argument("--end", default="2026-10-10")
     ap.add_argument("--fin-start", default="2014")
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--index", default="hs300", choices=["hs300", "zz500", "both"])
     args = ap.parse_args()
     kdir = os.path.join(args.out, "kline")
     fdir = os.path.join(args.out, "fin")
@@ -53,12 +54,17 @@ def main():
     os.makedirs(fdir, exist_ok=True)
 
     bs.login()
-    rs = bs.query_hs300_stocks()
-    rows = []
-    while rs.next():
-        rows.append(rs.get_row_data())
-    codes = [r[1] for r in pd.DataFrame(rows, columns=rs.fields).itertuples(index=False)] \
-        if False else [r[1] for r in pd.DataFrame(rows, columns=rs.fields).values]
+    codes = []
+    for which in (["hs300", "zz500"] if args.index == "both" else [args.index]):
+        rs = (bs.query_hs300_stocks() if which == "hs300"
+              else bs.query_zz500_stocks())
+        rows = []
+        while rs.next():
+            rows.append(rs.get_row_data())
+        got = [r[1] for r in pd.DataFrame(rows, columns=rs.fields).values]
+        print(f"{which}: {len(got)} codes", flush=True)
+        codes += [c for c in got if c not in codes]
+    print(f"total unique: {len(codes)}", flush=True)
     todo = []
     for code in codes:
         sym = code.split(".")[1] + "." + ("SH" if code.startswith("sh") else "SZ")
