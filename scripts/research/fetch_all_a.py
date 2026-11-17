@@ -24,6 +24,14 @@ def main():
     ap.add_argument("--end", default="2026-10-10")
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--shards", type=int, default=1)
+    ap.add_argument("--max-seconds", type=int, default=0,
+                    help="stop after this many seconds (0 = unlimited)")
+    ap.add_argument("--stop-after-empty", type=int, default=12,
+                    help="stop after this many consecutive empty results (throttling)")
+    ap.add_argument("--pause", type=float, default=0.2,
+                    help="sleep between symbols")
+    ap.add_argument("--reason", default="",
+                    help="tag appended to the progress log line")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     codes_path = os.path.join(args.out, "codes.txt")
@@ -46,7 +54,13 @@ def main():
     print(f"codes: {len(codes)} (shard {args.shard}/{args.shards})", flush=True)
 
     done = 0
+    empty_streak = 0
+    t0 = time.time()
     for i, code in enumerate(codes, 1):
+        if args.max_seconds and time.time() - t0 > args.max_seconds:
+            print(f"time budget reached at {i}", flush=True)
+            break
+        time.sleep(args.pause)
         sym = code.split(".")[1] + "." + ("SH" if code.startswith("sh") else "SZ")
         fp = os.path.join(args.out, f"{sym}-1d.parquet")
         if os.path.exists(fp):
@@ -64,6 +78,14 @@ def main():
                 if buf:
                     break
                 time.sleep(2 + 3 * attempt)
+            if not buf:
+                empty_streak += 1
+                if empty_streak >= args.stop_after_empty:
+                    print(f"throttled: {empty_streak} empty in a row, stop", flush=True)
+                    bs.logout()
+                    return 2
+            else:
+                empty_streak = 0
             if buf and len(buf) > 200:
                 d = pd.DataFrame(buf, columns=rs.fields)
                 for c in FIELDS.split(",")[1:]:
@@ -77,7 +99,8 @@ def main():
         if i % 200 == 0:
             print(f"  {i}/{len(codes)} saved={done}", flush=True)
     bs.logout()
-    print(f"done: {done} files in {args.out}")
+    print(f"done: {done} files in {args.out} "
+          f"in {time.time() - t0:.0f}s {args.reason}")
     return 0
 
 

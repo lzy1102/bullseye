@@ -25,7 +25,9 @@ def load(data_dir):
         d = pd.read_parquet(p)
         d["date"] = pd.to_datetime(d["date"])
         d = d.drop_duplicates("date").set_index("date")
-        px[sym] = d["close"]
+        c = pd.to_numeric(d["close"], errors="coerce")
+        c = c.where(c > 0)          # qfq 前复权会算出负价，直接作废
+        px[sym] = c
         pb[sym] = d["pbMRQ"]
         turn[sym] = d["turn"]
         amount[sym] = d["amount"]
@@ -172,8 +174,7 @@ def main():
         u["date"] = pd.to_datetime(u["date"])
         uni = u.groupby("date")["symbol"].apply(set).to_dict()
         print(f"PIT universe: {len(uni)} dates, "
-              f"{u['symbol'].nunique()} names
-")
+              f"{u['symbol'].nunique()} names", end="\n\n")
 
     if uni is not None:
         sub = px.loc[args.start:args.end]
