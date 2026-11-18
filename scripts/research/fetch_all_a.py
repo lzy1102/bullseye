@@ -8,11 +8,16 @@ multi-factor model needs.
 """
 import argparse
 import os
+import socket
 import sys
 import time
 
 import baostock as bs
 import pandas as pd
+
+# baostock 在被限流时不会返回错误，而是让 socket 读永远阻塞。
+# 全局默认超时让卡住的请求抛异常，从而计入"空结果"并由 --stop-after-empty 收手。
+socket.setdefaulttimeout(90)
 
 FIELDS = "date,close,volume,amount,turn,pctChg,peTTM,pbMRQ,isST"
 
@@ -69,12 +74,16 @@ def main():
         try:
             buf = []
             for attempt in range(3):
-                rs = bs.query_history_k_data_plus(code, FIELDS, start_date=args.start,
-                                                  end_date=args.end, frequency="d",
-                                                  adjustflag="2")
-                buf = []
-                while rs.next():
-                    buf.append(rs.get_row_data())
+                try:
+                    rs = bs.query_history_k_data_plus(code, FIELDS, start_date=args.start,
+                                                      end_date=args.end, frequency="d",
+                                                      adjustflag="2")
+                    buf = []
+                    while rs.next():
+                        buf.append(rs.get_row_data())
+                except (socket.timeout, OSError) as e:
+                    print(f"  timeout {code}: {type(e).__name__}", flush=True)
+                    buf = []
                 if buf:
                     break
                 time.sleep(2 + 3 * attempt)

@@ -18,9 +18,11 @@ import pandas as pd
 LAG_DAYS = 90
 
 
-def load(data_dir):
+def load(data_dir, kline_dir=None, fin_dir=None):
+    kline_dir = kline_dir or os.path.join(data_dir, "kline")
+    fin_dir = fin_dir or os.path.join(data_dir, "fin")
     px, pb, turn, amount = {}, {}, {}, {}
-    for p in glob.glob(os.path.join(data_dir, "kline", "*-1d.parquet")):
+    for p in glob.glob(os.path.join(kline_dir, "*-1d.parquet")):
         sym = os.path.basename(p)[:-len("-1d.parquet")]
         d = pd.read_parquet(p)
         d["date"] = pd.to_datetime(d["date"])
@@ -32,7 +34,7 @@ def load(data_dir):
         turn[sym] = d["turn"]
         amount[sym] = d["amount"]
     fin = {}
-    for p in glob.glob(os.path.join(data_dir, "fin", "*.parquet")):
+    for p in glob.glob(os.path.join(fin_dir, "*.parquet")):
         sym = os.path.basename(p)[:-len(".parquet")]
         f = pd.read_parquet(p)
         if f.empty:
@@ -41,8 +43,10 @@ def load(data_dir):
         f = f.drop_duplicates("date").sort_values("date")
         f["avail"] = f["date"] + pd.Timedelta(days=LAG_DAYS)
         fin[sym] = f.set_index("avail")
-    return (pd.DataFrame(px).sort_index(), pd.DataFrame(pb).sort_index(),
-            pd.DataFrame(turn).sort_index(), pd.DataFrame(amount).sort_index(), fin)
+    def mat(d):
+        return pd.DataFrame(d).sort_index().astype("float32")
+
+    return (mat(px), mat(pb), mat(turn), mat(amount), fin)
 
 
 def asof_multi(fin, syms, dates, col):
@@ -156,8 +160,15 @@ def main():
     ap.add_argument("--fee", type=float, default=0.001)
     ap.add_argument("--universe", default="",
                     help="point-in-time membership parquet (date,symbol)")
+    ap.add_argument("--kline-dir", default="",
+                    help="flat dir of *-1d.parquet (default <data>/kline)")
+    ap.add_argument("--fin-dir", default="",
+                    help="dir of <symbol>.parquet fundamentals (default <data>/fin)")
+    ap.add_argument("--only", default="",
+                    help="comma separated factor sets to run (default: all)")
     args = ap.parse_args()
-    px, pb, turn, amount, fin = load(args.data)
+    px, pb, turn, amount, fin = load(args.data, args.kline_dir or None,
+                                     args.fin_dir or None)
     print(f"prices {px.shape[1]} symbols, fundamentals {len(fin)}, "
           f"{px.index[0].date()}..{px.index[-1].date()}\n")
 
@@ -190,13 +201,17 @@ def main():
     else:
         ew = (1 + px.loc[args.start:args.end].pct_change().mean(axis=1).fillna(0)).cumprod()
         show("universal equal-weight", stats(ew))
-    for top in (20, 30, 50):
-        for label, use, use_ind in (
+    only = {x.strip() for x in args.only.split(",") if x.strip()}
+    sets = [
             ("all 5 factors", ("value", "quality", "growth", "mom", "lowvol"), False),
             ("all 5, industry cap", ("value", "quality", "growth", "mom", "lowvol"), True),
             ("value+quality", ("value", "quality"), False),
             ("mom+lowvol", ("mom", "lowvol"), False),
-        ):
+    ]
+    if only:
+        sets = [x for x in sets if x[0] in only]
+    for top in (20, 30, 50):
+        for label, use, use_ind in sets:
             eq, tv = backtest(px, pb, turn, fin, args.start, args.end, top=top,
                               fee=args.fee, use=use, industry=ind if use_ind else None,
                               universe=uni)
