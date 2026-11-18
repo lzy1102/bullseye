@@ -70,6 +70,7 @@ def zscore(df, winsor=(0.01, 0.99)):
 
 
 def backtest(px, pb, turn, fin, start, end, top=30, fee=0.001, lag=LAG_DAYS,
+             mom_fast=21, mom_slow=252, vol_win=60,
              use=("value", "quality", "growth", "mom", "lowvol"),
              industry=None, max_per_ind=6, universe=None):
     dates = px.loc[start:end].index
@@ -82,8 +83,8 @@ def backtest(px, pb, turn, fin, start, end, top=30, fee=0.001, lag=LAG_DAYS,
     npyoy = asof_multi(fin, syms, dates, "np_yoy")
     gm = asof_multi(fin, syms, dates, "gross_margin")
 
-    mom = px[syms].shift(21) / px[syms].shift(252) - 1
-    vol = ret[syms].rolling(60).std()
+    mom = px[syms].shift(mom_fast) / px[syms].shift(mom_slow) - 1
+    vol = ret[syms].rolling(vol_win).std()
     val = 1.0 / pb[syms].replace(0, np.nan)
 
     parts = []
@@ -164,6 +165,10 @@ def main():
                     help="flat dir of *-1d.parquet (default <data>/kline)")
     ap.add_argument("--fin-dir", default="",
                     help="dir of <symbol>.parquet fundamentals (default <data>/fin)")
+    ap.add_argument("--tops", default="20,30,50")
+    ap.add_argument("--mom-fast", type=int, default=21)
+    ap.add_argument("--mom-slow", type=int, default=252)
+    ap.add_argument("--vol-win", type=int, default=60)
     ap.add_argument("--only", default="",
                     help="comma separated factor sets to run (default: all)")
     args = ap.parse_args()
@@ -210,11 +215,12 @@ def main():
     ]
     if only:
         sets = [x for x in sets if x[0] in only]
-    for top in (20, 30, 50):
+    for top in [int(x) for x in args.tops.split(",")]:
         for label, use, use_ind in sets:
             eq, tv = backtest(px, pb, turn, fin, args.start, args.end, top=top,
                               fee=args.fee, use=use, industry=ind if use_ind else None,
-                              universe=uni)
+                              universe=uni, mom_fast=args.mom_fast,
+                              mom_slow=args.mom_slow, vol_win=args.vol_win)
             show(f"top{top} {label}", stats(eq), f"turnover {tv.sum():.0f}x")
     return 0
 
