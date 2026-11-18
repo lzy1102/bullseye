@@ -65,12 +65,12 @@ def main():
         if args.max_seconds and time.time() - t0 > args.max_seconds:
             print(f"time budget reached at {i}", flush=True)
             break
-        time.sleep(args.pause)
         sym = code.split(".")[1] + "." + ("SH" if code.startswith("sh") else "SZ")
         fp = os.path.join(args.out, f"{sym}-1d.parquet")
         if os.path.exists(fp):
             done += 1
             continue
+        time.sleep(args.pause)
         try:
             buf = []
             for attempt in range(3):
