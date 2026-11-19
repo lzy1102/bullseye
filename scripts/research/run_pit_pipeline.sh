@@ -30,7 +30,7 @@ cd /app 2>/dev/null
 docker run --rm --entrypoint python3 -w /app/scripts/research \
     -v /opt/bullseye/user_data:/app/user_data \
     -v /opt/bullseye/scripts:/app/scripts:ro bullseye:latest \
-    python3 fetch_fin_union.py --pit user_data/data_all/pit_top300.parquet \
+    fetch_fin_union.py --pit user_data/data_all/pit_top300.parquet \
     --fin-dir user_data/data_all_fin --workers 8 >> /var/log/pit_pipeline.log 2>&1
 
 for W in "2016-01-01 2020-12-31" "2021-01-01 2026-10-10" "2016-01-01 2026-10-10"; do

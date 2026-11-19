@@ -74,6 +74,10 @@ def backtest(px, pb, turn, fin, start, end, top=30, fee=0.001, lag=LAG_DAYS,
              use=("value", "quality", "growth", "mom", "lowvol"),
              industry=None, max_per_ind=6, universe=None):
     dates = px.loc[start:end].index
+    # 点时池是月末快照，调仓日是月初：必须用"最近一个不晚于调仓日的快照"，
+    # 直接 universe.get(调仓日) 永远取不到，会让组合全空。
+    uni_dates = sorted(universe.keys()) if universe is not None else []
+    uni_arr = np.array(uni_dates, dtype="datetime64[ns]")
     ret = px.pct_change().fillna(0).loc[dates]
     months = pd.Series(dates).dt.to_period("M").to_numpy()
     rebal = dates[np.r_[True, months[1:] != months[:-1]]]
@@ -108,7 +112,8 @@ def backtest(px, pb, turn, fin, start, end, top=30, fee=0.001, lag=LAG_DAYS,
         row = score.loc[d].dropna()
         row = row[px.loc[d, row.index].notna()]
         if universe is not None:
-            allowed = universe.get(d, set())
+            k = int(np.searchsorted(uni_arr, np.datetime64(d), side="right")) - 1
+            allowed = universe[uni_dates[k]] if k >= 0 else set()
             row = row[row.index.isin(allowed)]
         if row.empty:
             w.loc[d] = cur
@@ -194,12 +199,15 @@ def main():
 
     if uni is not None:
         sub = px.loc[args.start:args.end]
-        mask = pd.DataFrame(False, index=sub.index, columns=sub.columns)
+        # 必须是 NaN 才能 ffill：全 False 的矩阵没有缺失值可填，ffill 是空操作，
+        # 会让"当期成分"只在月末那一天生效、其余日子空仓。
+        mask = pd.DataFrame(np.nan, index=sub.index, columns=sub.columns,
+                            dtype="float32")
         for d, members in uni.items():
             if d in mask.index:
                 cols = [c for c in members if c in mask.columns]
-                mask.loc[d, cols] = True
-        mask = mask.ffill().fillna(False)
+                mask.loc[d, cols] = 1.0
+        mask = mask.ffill().fillna(0).astype(bool)
         r = sub.pct_change().fillna(0).where(mask)
         ew = (1 + r.mean(axis=1).fillna(0)).cumprod()
         show("PIT universe equal-weight", stats(ew))
