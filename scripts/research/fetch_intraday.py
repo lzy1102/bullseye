@@ -11,12 +11,35 @@ already on disk.
 import argparse
 import glob
 import os
+import signal
 import socket
 import sys
 import time
 
 import baostock as bs
 import pandas as pd
+
+
+class HardTimeout(Exception):
+    pass
+
+
+def _alarm(signum, frame):
+    raise HardTimeout()
+
+
+def with_timeout(seconds):
+    """baostock 在限流时会永久阻塞在 recv 上，socket 超时管不住，用 SIGALRM 硬断。"""
+    class _Ctx:
+        def __enter__(self):
+            signal.signal(signal.SIGALRM, _alarm)
+            signal.alarm(seconds)
+
+        def __exit__(self, *a):
+            signal.alarm(0)
+            return False
+    return _Ctx()
+
 
 FIELDS = "date,time,code,open,high,low,close,volume,amount"
 socket.setdefaulttimeout(90)
@@ -57,13 +80,14 @@ def main():
         fp = os.path.join(args.out, f"{sym}-{args.freq}m.parquet")
         buf = []
         try:
-            rs = bs.query_history_k_data_plus(code, FIELDS,
-                                              start_date=args.start,
-                                              end_date=args.end,
-                                              frequency=args.freq, adjustflag="2")
-            while rs.next():
-                buf.append(rs.get_row_data())
-        except (socket.timeout, OSError) as e:
+            with with_timeout(180):
+                rs = bs.query_history_k_data_plus(code, FIELDS,
+                                                  start_date=args.start,
+                                                  end_date=args.end,
+                                                  frequency=args.freq, adjustflag="2")
+                while rs.next():
+                    buf.append(rs.get_row_data())
+        except (socket.timeout, OSError, HardTimeout) as e:
             print(f"  timeout {sym}: {type(e).__name__}", flush=True)
             buf = []
         if not buf:

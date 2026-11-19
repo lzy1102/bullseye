@@ -19,6 +19,28 @@ import pandas as pd
 # 全局默认超时让卡住的请求抛异常，从而计入"空结果"并由 --stop-after-empty 收手。
 socket.setdefaulttimeout(90)
 
+
+class HardTimeout(Exception):
+    pass
+
+
+def _alarm(signum, frame):
+    raise HardTimeout()
+
+
+def with_timeout(seconds):
+    """baostock 在限流时会永久阻塞在 recv 上，socket 超时管不住，用 SIGALRM 硬断。"""
+    class _Ctx:
+        def __enter__(self):
+            signal.signal(signal.SIGALRM, _alarm)
+            signal.alarm(seconds)
+
+        def __exit__(self, *a):
+            signal.alarm(0)
+            return False
+    return _Ctx()
+
+
 FIELDS = "date,close,volume,amount,turn,pctChg,peTTM,pbMRQ,isST"
 
 
@@ -75,13 +97,14 @@ def main():
             buf = []
             for attempt in range(3):
                 try:
-                    rs = bs.query_history_k_data_plus(code, FIELDS, start_date=args.start,
-                                                      end_date=args.end, frequency="d",
-                                                      adjustflag="2")
-                    buf = []
-                    while rs.next():
-                        buf.append(rs.get_row_data())
-                except (socket.timeout, OSError) as e:
+                    with with_timeout(180):
+                        rs = bs.query_history_k_data_plus(code, FIELDS, start_date=args.start,
+                                                          end_date=args.end, frequency="d",
+                                                          adjustflag="2")
+                        buf = []
+                        while rs.next():
+                            buf.append(rs.get_row_data())
+                except (socket.timeout, OSError, HardTimeout) as e:
                     print(f"  timeout {code}: {type(e).__name__}", flush=True)
                     buf = []
                 if buf:
