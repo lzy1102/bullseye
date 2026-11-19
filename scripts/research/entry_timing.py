@@ -147,12 +147,19 @@ def main():
     print(f"\nentries: {len(df)}  (symbols with intraday: {df['symbol'].nunique()})\n")
     cols = ["open_d1", "m1030_d1", "vwap_d1", "pullback"]
     print("price delta vs the signal-day close; positive = you pay MORE (drag)")
-    print(f"{'rule':<12}{'mean bp':>10}{'median bp':>12}{'pay more%':>12}{'annual bp':>12}")
+    print(f"{'rule':<12}{'mean bp':>9}{'p5':>8}{'p50':>8}{'p95':>8}"
+          f"{'t':>7}{'pay more%':>11}{'annual bp':>11}")
     for col in cols:
-        x = df[col].dropna()
+        x = df[col].dropna() * 10000
+        t = x.mean() / (x.std() / np.sqrt(len(x)))
         # 12 次调仓/年，每次全组合换手一次 → 年化影响 ≈ 12 × 均值
-        print(f"{col:<12}{10000*x.mean():>10.1f}{10000*x.median():>12.1f}"
-              f"{100*(x > 0).mean():>12.1f}{12*10000*x.mean():>12.1f}")
+        print(f"{col:<12}{x.mean():>9.1f}{x.quantile(.05):>8.1f}"
+              f"{x.median():>8.1f}{x.quantile(.95):>8.1f}{t:>7.1f}"
+              f"{100*(x > 0).mean():>11.1f}{12*x.mean():>11.0f}")
+
+    print("\nby year (mean bp):")
+    yr = df.groupby(df["date"].dt.year)[cols].mean() * 10000
+    print(yr.round(1).to_string())
     if "missed" in df:
         print(f"\npullback limit {args.limit_pct*100:.1f}%: fill rate "
               f"{100*(1-df['missed'].mean()):.1f}%, "
